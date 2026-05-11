@@ -58,22 +58,15 @@ DATABASE INITIALIZATION
 ==========================================
 
 def get_db():
-
-conn = sqlite3.connect(DATABASE)
-
-conn.row_factory = sqlite3.Row
-
-return conn
-
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def initialize_db():
-
-conn = get_db()
-
-c = conn.cursor()
-
-
-# User Profiles: Now includes Bio and Custom Color
+    conn = get_db()
+    c = conn.cursor()
+  
+# UserProfiles: Now includes Bio and Custom Color
 
 c.execute("""CREATE TABLE IF NOT EXISTS profiles (
 
