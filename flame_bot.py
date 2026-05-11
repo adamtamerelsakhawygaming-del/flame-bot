@@ -1688,8 +1688,7 @@ async def tutorial(ctx):
     ]
 
     embed = discord.Embed(title="Flame Bot Tutorial", color=0x00FF00)
-    embed.description = "
-".join(steps)
+    embed.description = "\n".join(steps)
     await ctx.send(embed=embed)
 
 @bot.command()
