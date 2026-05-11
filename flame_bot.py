@@ -8,6 +8,9 @@ import random
 
 import asyncio
 
+import os
+from dotenv import load_dotenv
+
 from datetime import datetime
 
 
@@ -17,7 +20,8 @@ CONFIGURATION
 
 ==========================================
 
-TOKEN = "MTUwMzMwODQyNjk4NDQyNzYwMQ.GZsc6i.HSF3YhBlbUs8vNw0zkgfmLqI0R_13KrNSjFsG0"
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 PREFIXES = ["flame ", "f "]
 
