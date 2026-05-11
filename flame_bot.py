@@ -65,80 +65,38 @@ def get_db():
 def initialize_db():
     conn = get_db()
     c = conn.cursor()
-  
-# UserProfiles: Now includes Bio and Custom Color
+    
+    # Global Profiles: Tracks levels, embers, and bio
+    c.execute("""CREATE TABLE IF NOT EXISTS profiles (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance INTEGER DEFAULT 1000,
+        xp INTEGER DEFAULT 0,
+        level INTEGER DEFAULT 1,
+        prestige INTEGER DEFAULT 0,
+        bio TEXT DEFAULT 'No bio set.',
+        profile_color TEXT DEFAULT '#2b2d31'
+    )""")
+    
+    # Player Inventories
+    c.execute("""CREATE TABLE IF NOT EXISTS inventory (
+        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id INTEGER,
+        item_name TEXT,
+        item_type TEXT
+    )""")
+    
+    # Marketplace Listings
+    c.execute("""CREATE TABLE IF NOT EXISTS marketplace (
+        list_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller_id INTEGER,
+        item_id INTEGER,
+        item_name TEXT,
+        price INTEGER
+    )""")
 
-c.execute("""CREATE TABLE IF NOT EXISTS profiles (
-
-user_id INTEGER PRIMARY KEY,
-
-username TEXT,
-
-balance INTEGER DEFAULT 1000,
-
-xp INTEGER DEFAULT 0,
-
-level INTEGER DEFAULT 1,
-
-prestige INTEGER DEFAULT 0,
-
-bio TEXT DEFAULT 'No bio set.',
-
-profile_color TEXT DEFAULT '#2b2d31'
-
-)""")
-
-
-# Global Inventory
-
-c.execute("""CREATE TABLE IF NOT EXISTS inventory (
-
-item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-owner_id INTEGER,
-
-item_name TEXT,
-
-item_type TEXT
-
-)""")
-
-
-# Global Marketplace
-
-c.execute("""CREATE TABLE IF NOT EXISTS marketplace (
-
-list_id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-seller_id INTEGER,
-
-item_id INTEGER,
-
-item_name TEXT,
-
-price INTEGER
-
-)""")
-
-
-# Role Rewards (For Part 3)
-
-c.execute("""CREATE TABLE IF NOT EXISTS role_rewards (
-
-guild_id INTEGER,
-
-level INTEGER,
-
-role_id INTEGER,
-
-PRIMARY KEY (guild_id, level)
-
-)""")
-
-
-conn.commit()
-
-conn.close()
+    conn.commit()
+    conn.close()
 
 
 ==========================================
