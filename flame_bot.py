@@ -87,7 +87,9 @@ def init_db():
 init_db()
 
 def get_db():
-    return sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row  # This allows accessing columns by name
+    return conn
 
 def get_user(user_id):
     conn = get_db()
@@ -170,17 +172,17 @@ async def help(ctx, *, category=None):
 async def embers(ctx):
     user = get_user(ctx.author.id)
     embed = discord.Embed(title=f"{ctx.author.display_name}'s Embers", color=0xFFD93D)
-    embed.add_field(name="Balance", value=f"{user[1]} embers", inline=False)
-    if user[7] > 0:
-        embed.add_field(name="Loan", value=f"{user[7]} embers owed", inline=False)
+    embed.add_field(name="Balance", value=f"{user['embers']} embers", inline=False)
+    if user['loan'] > 0:
+        embed.add_field(name="Loan", value=f"{user['loan']} embers owed", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command(aliases=["d"])
 async def daily(ctx):
     user = get_user(ctx.author.id)
     now = datetime.now()
-    last = user[3]
-    streak_count = user[2]
+    last = user['last_daily']
+    streak_count = user['daily_streak']
 
     if last:
         last_dt = datetime.fromisoformat(last)
@@ -197,7 +199,7 @@ async def daily(ctx):
     bonus = min(streak_count * 10, 200)
     amount = base + bonus
 
-    update_user(ctx.author.id, embers=user[1]+amount, daily_streak=streak_count, last_daily=now.isoformat())
+    update_user(ctx.author.id, embers=user['embers']+amount, daily_streak=streak_count, last_daily=now.isoformat())
 
     embed = discord.Embed(title="Daily Reward", color=0x00FF00)
     embed.add_field(name="Embers", value=f"+{amount}", inline=False)
@@ -209,7 +211,7 @@ async def daily(ctx):
 @bot.command(aliases=["str"])
 async def streak(ctx):
     user = get_user(ctx.author.id)
-    await ctx.send(f"{ctx.author.display_name}'s streak: {user[2]} days")
+    await ctx.send(f"{ctx.author.display_name}'s streak: {user['daily_streak']} days")
 
 @bot.command()
 async def beg(ctx):
@@ -232,15 +234,15 @@ async def beg(ctx):
             break
 
     if outcome == "gives":
-        update_user(ctx.author.id, embers=max(0, user[1]+amount))
+        update_user(ctx.author.id, embers=max(0, user['embers']+amount))
         await ctx.send(f"{npc} pities you and gives you {amount} embers.")
     elif outcome == "ignores":
         await ctx.send(f"{npc} walks past without a glance.")
     elif outcome == "insults":
-        update_user(ctx.author.id, embers=max(0, user[1]+amount))
+        update_user(ctx.author.id, embers=max(0, user['embers']+amount))
         await ctx.send(f"{npc} insults you and you lose {-amount} embers from shame.")
     else:
-        update_user(ctx.author.id, embers=max(0, user[1]+amount))
+        update_user(ctx.author.id, embers=max(0, user['embers']+amount))
         await ctx.send(f"{npc} curses you! You lose {-amount} embers.")
 
 @bot.command()
@@ -248,40 +250,40 @@ async def scam(ctx):
     user = get_user(ctx.author.id)
     if random.random() < 0.6:
         gain = random.randint(50, 200)
-        update_user(ctx.author.id, embers=user[1]+gain)
+        update_user(ctx.author.id, embers=user['embers']+gain)
         await ctx.send(f"Scam successful! You swindled {gain} embers.")
     else:
         loss = random.randint(30, 100)
-        update_user(ctx.author.id, embers=max(0, user[1]-loss))
+        update_user(ctx.author.id, embers=max(0, user['embers']-loss))
         await ctx.send(f"Caught scamming! Fined {loss} embers.")
 
 @bot.command()
 async def invest(ctx, amount: int):
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
     await ctx.send(f"Invested {amount} embers... checking market in 5 seconds...")
     await asyncio.sleep(5)
 
     roll = random.random()
     if roll < 0.4:
         result = int(amount * 0.5)
-        update_user(ctx.author.id, embers=user[1]-amount+result)
+        update_user(ctx.author.id, embers=user['embers']-amount+result)
         await ctx.send(f"Market crashed! You got back {result} embers.")
     elif roll < 0.7:
         result = int(amount * 1.5)
-        update_user(ctx.author.id, embers=user[1]-amount+result)
+        update_user(ctx.author.id, embers=user['embers']-amount+result)
         await ctx.send(f"Steady growth! You got back {result} embers.")
     elif roll < 0.9:
         result = amount * 2
-        update_user(ctx.author.id, embers=user[1]-amount+result)
+        update_user(ctx.author.id, embers=user['embers']-amount+result)
         await ctx.send(f"Moon! You got back {result} embers!")
     else:
         result = amount * 3
-        update_user(ctx.author.id, embers=user[1]-amount+result)
+        update_user(ctx.author.id, embers=user['embers']-amount+result)
         await ctx.send(f"Jackpot! You got back {result} embers!")
 
 @bot.command()
@@ -313,49 +315,49 @@ async def heist(ctx):
         loot = random.randint(500, 1500) // len(participants)
         for pid in participants:
             u = get_user(pid)
-            update_user(pid, embers=u[1]+loot)
+            update_user(pid, embers=u['embers']+loot)
         await ctx.send(f"Heist successful! Each member got {loot} embers.")
     else:
         for pid in participants:
             u = get_user(pid)
             loss = random.randint(50, 150)
-            update_user(pid, embers=max(0, u[1]-loss))
+            update_user(pid, embers=max(0, u['embers']-loss))
         await ctx.send(f"Heist failed! Everyone lost embers to bail.")
 
 @bot.command()
 async def loan(ctx, amount: int):
     user = get_user(ctx.author.id)
-    if user[7] > 0:
-        await ctx.send(f"You already owe {user[7]} embers!")
+    if user['loan'] > 0:
+        await ctx.send(f"You already owe {user['loan']} embers!")
         return
     if amount < 100 or amount > 5000:
         await ctx.send("Loan range: 100-5000 embers.")
         return
 
-    update_user(ctx.author.id, embers=user[1]+amount, loan=amount, loan_time=datetime.now().isoformat())
+    update_user(ctx.author.id, embers=user['embers']+amount, loan=amount, loan_time=datetime.now().isoformat())
     await ctx.send(f"Loaned {amount} embers. Interest compounds hourly. Repay with `flame repay`.")
 
 @bot.command()
 async def repay(ctx, amount: int = None):
     user = get_user(ctx.author.id)
-    if user[7] <= 0:
+    if user['loan'] <= 0:
         await ctx.send("No active loan.")
         return
 
-    owed = user[7]
-    if user[8]:
-        loan_time = datetime.fromisoformat(user[8])
+    owed = user['loan']
+    if user['loan_time']:
+        loan_time = datetime.fromisoformat(user['loan_time'])
         hours = (datetime.now() - loan_time).seconds // 3600 + 1
         owed = int(owed * (1.05 ** hours))
 
     if amount is None:
         amount = owed
 
-    if amount > user[1]:
+    if amount > user['embers']:
         await ctx.send("Not enough embers.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount, loan=max(0, owed-amount))
+    update_user(ctx.author.id, embers=user['embers']-amount, loan=max(0, owed-amount))
     if owed - amount <= 0:
         update_user(ctx.author.id, loan=0, loan_time=None)
         await ctx.send("Loan fully repaid!")
@@ -365,11 +367,11 @@ async def repay(ctx, amount: int = None):
 @bot.command()
 async def burn(ctx, amount: int):
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
     await ctx.send(f"You burned {amount} embers into nothingness. Why?")
 
 @bot.command()
@@ -382,7 +384,7 @@ async def send(ctx, member: discord.Member, amount: int):
         return
 
     sender = get_user(ctx.author.id)
-    if sender[1] < amount:
+    if sender['embers'] < amount:
         await ctx.send("Not enough embers.")
         return
 
@@ -421,12 +423,12 @@ async def send(ctx, member: discord.Member, amount: int):
     sender = get_user(ctx.author.id)
     receiver = get_user(member.id)
 
-    if sender[1] < amount:
+    if sender['embers'] < amount:
         await ctx.send("Not enough embers anymore.")
         return
 
-    update_user(ctx.author.id, embers=sender[1]-amount)
-    update_user(member.id, embers=receiver[1]+amount)
+    update_user(ctx.author.id, embers=sender['embers']-amount)
+    update_user(member.id, embers=receiver['embers']+amount)
 
     conn = get_db()
     c = conn.cursor()
@@ -439,7 +441,6 @@ async def send(ctx, member: discord.Member, amount: int):
 # ========== CREATURES ==========
 @bot.command(aliases=["hunt", "catch"])
 async def summon(ctx):
-    user = get_user(ctx.author.id)
     rarity = get_rarity()
     species = random.choice(SPECIES[rarity])
 
@@ -480,11 +481,11 @@ async def cage(ctx, page: int = 1):
 
     embed = discord.Embed(title=f"{ctx.author.display_name}'s Cage", color=0x9B59B6)
     for cr in page_creatures:
-        name = cr[11] if cr[11] else cr[2]
-        fav = " [FAV]" if cr[10] else ""
+        name = cr['custom_name'] if cr['custom_name'] else cr['name']
+        fav = " [FAV]" if cr['favorite'] else ""
         embed.add_field(
-            name=f"#{cr[0]} {name}{fav}",
-            value=f"{cr[4]} | Lv.{cr[5]} | Mood: {cr[7]} | XP: {cr[6]}",
+            name=f"#{cr['id']} {name}{fav}",
+            value=f"{cr['rarity']} | Lv.{cr['level']} | Mood: {cr['mood']} | XP: {cr['xp']}",
             inline=False
         )
     embed.set_footer(text=f"Page {page}/{total_pages} | {len(creatures)} creatures")
@@ -509,10 +510,10 @@ async def release(ctx, creature_id: int):
     if random.random() < 0.1:
         user = get_user(ctx.author.id)
         curse = random.randint(10, 50)
-        update_user(ctx.author.id, embers=max(0, user[1]-curse))
-        await ctx.send(f"Released {creature[2]}... it cursed you! Lost {curse} embers.")
+        update_user(ctx.author.id, embers=max(0, user['embers']-curse))
+        await ctx.send(f"Released {creature['name']}... it cursed you! Lost {curse} embers.")
     else:
-        await ctx.send(f"Released {creature[2]} into the wild.")
+        await ctx.send(f"Released {creature['name']} into the wild.")
 
 @bot.command()
 async def feed(ctx, creature_id: int):
@@ -526,14 +527,14 @@ async def feed(ctx, creature_id: int):
         conn.close()
         return
 
-    new_mood = min(100, creature[8] + random.randint(5, 15))
+    new_mood = min(100, creature['mood_score'] + random.randint(5, 15))
     mood_text = "happy" if new_mood > 70 else "content" if new_mood > 40 else "grumpy"
 
     c.execute("UPDATE creatures SET mood_score = ?, mood = ? WHERE id = ?", (new_mood, mood_text, creature_id))
     conn.commit()
     conn.close()
 
-    await ctx.send(f"Fed {creature[2]}. Mood: {mood_text} ({new_mood}/100)")
+    await ctx.send(f"Fed {creature['name']}. Mood: {mood_text} ({new_mood}/100)")
 
 @bot.command()
 async def neglect(ctx, creature_id: int):
@@ -547,14 +548,14 @@ async def neglect(ctx, creature_id: int):
         conn.close()
         return
 
-    new_mood = max(0, creature[8] - random.randint(10, 20))
+    new_mood = max(0, creature['mood_score'] - random.randint(10, 20))
     mood_text = "happy" if new_mood > 70 else "content" if new_mood > 40 else "grumpy" if new_mood > 20 else "feral"
 
     c.execute("UPDATE creatures SET mood_score = ?, mood = ? WHERE id = ?", (new_mood, mood_text, creature_id))
     conn.commit()
     conn.close()
 
-    await ctx.send(f"Neglected {creature[2]}. Mood: {mood_text} ({new_mood}/100)")
+    await ctx.send(f"Neglected {creature['name']}. Mood: {mood_text} ({new_mood}/100)")
 
 @bot.command()
 async def mood(ctx, creature_id: int):
@@ -568,7 +569,7 @@ async def mood(ctx, creature_id: int):
         await ctx.send("Creature not found.")
         return
 
-    await ctx.send(f"{row[2]} is feeling {row[0]} ({row[1]}/100)")
+    await ctx.send(f"{row['name']} is feeling {row['mood']} ({row['mood_score']}/100)")
 
 @bot.command()
 async def evolve(ctx, creature_id: int):
@@ -582,27 +583,27 @@ async def evolve(ctx, creature_id: int):
         conn.close()
         return
 
-    if creature[11]:
+    if creature['evolved']:
         await ctx.send("Already evolved.")
         conn.close()
         return
 
-    if creature[8] < 30 or creature[8] > 80:
-        await ctx.send(f"{creature[2]} needs balanced care (mood 30-80) to evolve. Current: {creature[8]}")
+    if creature['mood_score'] < 30 or creature['mood_score'] > 80:
+        await ctx.send(f"{creature['name']} needs balanced care (mood 30-80) to evolve. Current: {creature['mood_score']}")
         conn.close()
         return
 
-    if creature[6] < 100:
-        await ctx.send(f"{creature[2]} needs 100 XP to evolve. Current: {creature[6]}")
+    if creature['xp'] < 100:
+        await ctx.send(f"{creature['name']} needs 100 XP to evolve. Current: {creature['xp']}")
         conn.close()
         return
 
     c.execute("UPDATE creatures SET evolved = 1, level = level + 1, name = ? WHERE id = ?",
-              (f"Evo {creature[2]}", creature_id))
+              (f"Evo {creature['name']}", creature_id))
     conn.commit()
     conn.close()
 
-    await ctx.send(f"{creature[2]} evolved into Evo {creature[2]}! Level up!")
+    await ctx.send(f"{creature['name']} evolved into Evo {creature['name']}! Level up!")
 
 @bot.command()
 async def breed(ctx, id1: int, id2: int):
@@ -622,9 +623,9 @@ async def breed(ctx, id1: int, id2: int):
         species = f"Abomination-{random.randint(1,999)}"
         rarity = "common"
     else:
-        rarities = [cr1[4], cr2[4]]
+        rarities = [cr1['rarity'], cr2['rarity']]
         rarity = max(rarities, key=lambda x: list(RARITY_WEIGHTS.keys()).index(x))
-        species = f"{cr1[2]}-{cr2[2]}"
+        species = f"{cr1['name']}-{cr2['name']}"
 
     c.execute("INSERT INTO creatures (user_id, name, species, rarity) VALUES (?, ?, ?, ?)",
               (ctx.author.id, species, species, rarity))
@@ -632,7 +633,7 @@ async def breed(ctx, id1: int, id2: int):
     new_id = c.lastrowid
     conn.close()
 
-    await ctx.send(f"Bred {cr1[2]} and {cr2[2]}... created #{new_id} {species} ({rarity})!")
+    await ctx.send(f"Bred {cr1['name']} and {cr2['name']}... created #{new_id} {species} ({rarity})!")
 
 @bot.command()
 async def sacrifice(ctx, creature_id: int):
@@ -651,7 +652,7 @@ async def sacrifice(ctx, creature_id: int):
     conn.close()
 
     drops = {"common": 10, "uncommon": 25, "rare": 60, "epic": 150, "legendary": 500}
-    drop = drops.get(creature[4], 10)
+    drop = drops.get(creature['rarity'], 10)
 
     if random.random() < 0.3:
         drop *= 2
@@ -660,9 +661,9 @@ async def sacrifice(ctx, creature_id: int):
         msg = ""
 
     user = get_user(ctx.author.id)
-    update_user(ctx.author.id, embers=user[1]+drop)
+    update_user(ctx.author.id, embers=user['embers']+drop)
 
-    await ctx.send(f"{msg}Sacrificed {creature[2]} for {drop} embers.")
+    await ctx.send(f"{msg}Sacrificed {creature['name']} for {drop} embers.")
 
 @bot.command()
 async def rename(ctx, creature_id: int, *, new_name: str):
@@ -690,7 +691,7 @@ async def favorite(ctx, creature_id: int):
         conn.close()
         return
 
-    new_fav = 0 if row[0] else 1
+    new_fav = 0 if row['favorite'] else 1
     c.execute("UPDATE creatures SET favorite = ? WHERE id = ?", (new_fav, creature_id))
     conn.commit()
     conn.close()
@@ -720,7 +721,7 @@ async def trade(ctx, member: discord.Member, your_id: int, their_id: int):
     c.execute("SELECT user_id FROM creatures WHERE id = ?", (their_id,))
     t = c.fetchone()
 
-    if not y or y[0] != ctx.author.id or not t or t[0] != member.id:
+    if not y or y['user_id'] != ctx.author.id or not t or t['user_id'] != member.id:
         await ctx.send("Invalid creatures.")
         conn.close()
         return
@@ -751,7 +752,7 @@ async def auction(ctx, creature_id: int, start_bid: int):
     auction_id = c.lastrowid
     conn.close()
 
-    await ctx.send(f"Auction #{auction_id} started for {creature[2]}! Starting bid: {start_bid} embers. Use `flame bid {auction_id} <amount>`")
+    await ctx.send(f"Auction #{auction_id} started for {creature['name']}! Starting bid: {start_bid} embers. Use `flame bid {auction_id} <amount>`")
 
 @bot.command()
 async def bid(ctx, auction_id: int, amount: int):
@@ -765,22 +766,22 @@ async def bid(ctx, auction_id: int, amount: int):
         conn.close()
         return
 
-    if amount <= auction[3]:
-        await ctx.send(f"Bid must be higher than {auction[3]}.")
+    if amount <= auction['current_bid']:
+        await ctx.send(f"Bid must be higher than {auction['current_bid']}.")
         conn.close()
         return
 
     user = get_user(ctx.author.id)
-    if user[1] < amount:
+    if user['embers'] < amount:
         await ctx.send("Not enough embers.")
         conn.close()
         return
 
-    if auction[5]:
-        prev = get_user(auction[5])
-        update_user(auction[5], embers=prev[1]+auction[3])
+    if auction['highest_bidder']:
+        prev = get_user(auction['highest_bidder'])
+        update_user(auction['highest_bidder'], embers=prev['embers']+auction['current_bid'])
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
     c.execute("UPDATE auctions SET current_bid = ?, highest_bidder = ? WHERE id = ?", (amount, ctx.author.id, auction_id))
     conn.commit()
     conn.close()
@@ -799,15 +800,15 @@ async def inspect(ctx, creature_id: int):
         await ctx.send("Creature not found.")
         return
 
-    name = cr[11] if cr[11] else cr[2]
+    name = cr['custom_name'] if cr['custom_name'] else cr['name']
     embed = discord.Embed(title=f"Inspect: {name}", color=0x9B59B6)
-    embed.add_field(name="Species", value=cr[3], inline=False)
-    embed.add_field(name="Rarity", value=cr[4].upper(), inline=False)
-    embed.add_field(name="Level", value=cr[5], inline=False)
-    embed.add_field(name="XP", value=f"{cr[6]}/100", inline=False)
-    embed.add_field(name="Mood", value=f"{cr[7]} ({cr[8]}/100)", inline=False)
-    embed.add_field(name="Evolved", value="Yes" if cr[11] else "No", inline=False)
-    embed.add_field(name="Favorite", value="Yes" if cr[10] else "No", inline=False)
+    embed.add_field(name="Species", value=cr['species'], inline=False)
+    embed.add_field(name="Rarity", value=cr['rarity'].upper(), inline=False)
+    embed.add_field(name="Level", value=cr['level'], inline=False)
+    embed.add_field(name="XP", value=f"{cr['xp']}/100", inline=False)
+    embed.add_field(name="Mood", value=f"{cr['mood']} ({cr['mood_score']}/100)", inline=False)
+    embed.add_field(name="Evolved", value="Yes" if cr['evolved'] else "No", inline=False)
+    embed.add_field(name="Favorite", value="Yes" if cr['favorite'] else "No", inline=False)
 
     lores = {
         "Grub": "Born from decay, feeds on forgotten things.",
@@ -836,7 +837,7 @@ async def inspect(ctx, creature_id: int):
         "Celestial": "Not from here. Doesn't understand here.",
         "Void Walker": "Walks where nothing should.",
     }
-    embed.add_field(name="Lore", value=lores.get(cr[3], "Mysterious origins."), inline=False)
+    embed.add_field(name="Lore", value=lores.get(cr['species'], "Mysterious origins."), inline=False)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -851,12 +852,12 @@ async def adopt(ctx, member: discord.Member, creature_id: int):
         conn.close()
         return
 
-    if cr[8] > 30:
-        await ctx.send(f"{cr[2]} is too well cared for to be adopted.")
+    if cr['mood_score'] > 30:
+        await ctx.send(f"{cr['name']} is too well cared for to be adopted.")
         conn.close()
         return
 
-    await ctx.send(f"{member.mention}, {ctx.author.display_name} wants to adopt your neglected {cr[2]}. Reply `yes` or `no`.")
+    await ctx.send(f"{member.mention}, {ctx.author.display_name} wants to adopt your neglected {cr['name']}. Reply `yes` or `no`.")
 
     def check(m):
         return m.author.id == member.id and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
@@ -876,12 +877,12 @@ async def adopt(ctx, member: discord.Member, creature_id: int):
     conn.commit()
     conn.close()
 
-    await ctx.send(f"Adopted {cr[2]}!")
+    await ctx.send(f"Adopted {cr['name']}!")
 
 @bot.command()
 async def kidnap(ctx, member: discord.Member, creature_id: int):
     user = get_user(ctx.author.id)
-    if user[1] < 100:
+    if user['embers'] < 100:
         await ctx.send("Kidnapping costs 100 embers.")
         return
 
@@ -895,18 +896,18 @@ async def kidnap(ctx, member: discord.Member, creature_id: int):
         conn.close()
         return
 
-    update_user(ctx.author.id, embers=user[1]-100)
+    update_user(ctx.author.id, embers=user['embers']-100)
 
     if random.random() < 0.5:
         c.execute("UPDATE creatures SET user_id = ? WHERE id = ?", (ctx.author.id, creature_id))
         conn.commit()
         conn.close()
-        await ctx.send(f"Successfully kidnapped {cr[2]}! The perfect crime.")
+        await ctx.send(f"Successfully kidnapped {cr['name']}! The perfect crime.")
     else:
         fine = random.randint(50, 150)
-        update_user(ctx.author.id, embers=max(0, user[1]-100-fine))
+        update_user(ctx.author.id, embers=max(0, user['embers']-100-fine))
         conn.close()
-        await ctx.send(f"Caught kidnapping! Fined {fine} embers. {cr[2]} escaped.")
+        await ctx.send(f"Caught kidnapping! Fined {fine} embers. {cr['name']} escaped.")
 
 # ========== COMBAT ==========
 @bot.command()
@@ -919,7 +920,7 @@ async def duel(ctx, member: discord.Member, wager: int = 0):
     u2 = get_user(member.id)
 
     if wager > 0:
-        if u1[1] < wager or u2[1] < wager:
+        if u1['embers'] < wager or u2['embers'] < wager:
             await ctx.send("One of you can't afford the wager.")
             return
 
@@ -949,8 +950,8 @@ async def duel(ctx, member: discord.Member, wager: int = 0):
         await ctx.send("Both need a favorited creature to duel.")
         return
 
-    p1 = c1[5] * 10 + c1[8]
-    p2 = c2[5] * 10 + c2[8]
+    p1 = c1['level'] * 10 + c1['mood_score']
+    p2 = c2['level'] * 10 + c2['mood_score']
 
     roll1 = random.randint(1, 100) + p1
     roll2 = random.randint(1, 100) + p2
@@ -958,10 +959,10 @@ async def duel(ctx, member: discord.Member, wager: int = 0):
     winner = ctx.author if roll1 > roll2 else member
 
     if wager > 0:
-        update_user(ctx.author.id, embers=u1[1]-wager if winner.id != ctx.author.id else u1[1]+wager)
-        update_user(member.id, embers=u2[1]-wager if winner.id != member.id else u2[1]+wager)
+        update_user(ctx.author.id, embers=u1['embers']-wager if winner.id != ctx.author.id else u1['embers']+wager)
+        update_user(member.id, embers=u2['embers']-wager if winner.id != member.id else u2['embers']+wager)
 
-    await ctx.send(f"{c1[2]} ({roll1}) vs {c2[2]} ({roll2})... {winner.mention} wins!")
+    await ctx.send(f"{c1['name']} ({roll1}) vs {c2['name']} ({roll2})... {winner.mention} wins!")
 
 @bot.command()
 async def raid(ctx):
@@ -995,7 +996,7 @@ async def raid(ctx):
         best = c.fetchone()
         conn.close()
 
-        dmg = (best[0] if best else 1) * random.randint(10, 30)
+        dmg = (best['level'] if best else 1) * random.randint(10, 30)
         total_dmg += dmg
 
     await ctx.send(f"Party dealt {total_dmg} damage!")
@@ -1005,7 +1006,7 @@ async def raid(ctx):
         loot = random.randint(200, 500) // len(participants)
         for pid in participants:
             u = get_user(pid)
-            update_user(pid, embers=u[1]+loot)
+            update_user(pid, embers=u['embers']+loot)
             conn = get_db()
             c = conn.cursor()
             c.execute("UPDATE creatures SET xp = xp + 50 WHERE user_id = ? ORDER BY level DESC LIMIT 1", (pid,))
@@ -1038,13 +1039,13 @@ async def ambush(ctx, member: discord.Member):
 
     roll = random.randint(1, 100)
     if roll > 60:
-        steal = random.randint(10, min(100, u2[1]))
-        update_user(ctx.author.id, embers=u1[1]+steal)
-        update_user(member.id, embers=max(0, u2[1]-steal))
+        steal = random.randint(10, min(100, u2['embers']))
+        update_user(ctx.author.id, embers=u1['embers']+steal)
+        update_user(member.id, embers=max(0, u2['embers']-steal))
         await ctx.send(f"Ambush successful! Stole {steal} embers from {member.display_name}.")
     else:
         fine = random.randint(20, 50)
-        update_user(ctx.author.id, embers=max(0, u1[1]-fine))
+        update_user(ctx.author.id, embers=max(0, u1['embers']-fine))
         await ctx.send(f"Ambush failed! Lost {fine} embers fleeing.")
 
 @bot.command()
@@ -1079,8 +1080,8 @@ async def berserk(ctx, member: discord.Member):
 
     if dmg > self_dmg + 20:
         steal = random.randint(20, 80)
-        update_user(ctx.author.id, embers=u1[1]+steal)
-        update_user(member.id, embers=max(0, u2[1]-steal))
+        update_user(ctx.author.id, embers=u1['embers']+steal)
+        update_user(member.id, embers=max(0, u2['embers']-steal))
         await ctx.send(f"Won the berserk clash! Stole {steal} embers.")
     else:
         await ctx.send("Berserk failed. Just hurt yourself for no reason.")
@@ -1092,11 +1093,11 @@ async def bribe(ctx, member: discord.Member, amount: int):
         return
 
     u1 = get_user(ctx.author.id)
-    if u1[1] < amount:
+    if u1['embers'] < amount:
         await ctx.send("Not enough embers.")
         return
 
-    update_user(ctx.author.id, embers=u1[1]-amount)
+    update_user(ctx.author.id, embers=u1['embers']-amount)
 
     if random.random() < 0.6:
         await ctx.send(f"Bribed {member.display_name} with {amount} embers. They won't attack you for... a while.")
@@ -1135,8 +1136,8 @@ async def combo(ctx, member: discord.Member):
 
     u1 = get_user(ctx.author.id)
     u2 = get_user(member.id)
-    update_user(ctx.author.id, embers=u1[1]+loot)
-    update_user(member.id, embers=u2[1]+loot)
+    update_user(ctx.author.id, embers=u1['embers']+loot)
+    update_user(member.id, embers=u2['embers']+loot)
 
     await ctx.send(f"Combo attack dealt {dmg} damage! Both got {loot} embers.")
 
@@ -1152,15 +1153,15 @@ async def revive(ctx, creature_id: int):
         await ctx.send("Creature not found.")
         return
 
-    cost = cr[5] * 50
+    cost = cr['level'] * 50
     user = get_user(ctx.author.id)
 
-    if user[1] < cost:
+    if user['embers'] < cost:
         await ctx.send(f"Revive costs {cost} embers.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-cost)
-    await ctx.send(f"Revived {cr[2]} for {cost} embers. It's back... different somehow.")
+    update_user(ctx.author.id, embers=user['embers']-cost)
+    await ctx.send(f"Revived {cr['name']} for {cost} embers. It's back... different somehow.")
 
 @bot.command()
 async def wager(ctx, member: discord.Member, amount: int):
@@ -1171,7 +1172,7 @@ async def wager(ctx, member: discord.Member, amount: int):
     u1 = get_user(ctx.author.id)
     u2 = get_user(member.id)
 
-    if u1[1] < amount or u2[1] < amount:
+    if u1['embers'] < amount or u2['embers'] < amount:
         await ctx.send("One of you can't afford it.")
         return
 
@@ -1197,17 +1198,17 @@ async def rank(ctx):
     conn.close()
 
     embed = discord.Embed(title="Combat Rankings", color=0xFF0000)
-    for i, (uid, count) in enumerate(rows, 1):
-        user = bot.get_user(uid)
-        name = user.display_name if user else f"User {uid}"
-        embed.add_field(name=f"#{i} {name}", value=f"{count} creatures", inline=False)
+    for i, row in enumerate(rows, 1):
+        user = bot.get_user(row['user_id'])
+        name = user.display_name if user else f"User {row['user_id']}"
+        embed.add_field(name=f"#{i} {name}", value=f"{row['wins']} creatures", inline=False)
     await ctx.send(embed=embed)
 
 # ========== GAMBLING ==========
 def check_gambling_ban(user_id):
     user = get_user(user_id)
-    if user[9]:
-        ban_until = datetime.fromisoformat(user[9])
+    if user['gambling_ban_until']:
+        ban_until = datetime.fromisoformat(user['gambling_ban_until'])
         if datetime.now() < ban_until:
             return False, (ban_until - datetime.now()).seconds
     return True, 0
@@ -1220,11 +1221,11 @@ async def dice(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     roll1 = random.randint(1, 100)
     roll2 = random.randint(1, 100)
@@ -1233,10 +1234,10 @@ async def dice(ctx, amount: int):
 
     if roll1 > roll2:
         winnings = int(amount * 1.5)
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"You win! Got {winnings} embers (1.5x).")
     elif roll1 == roll2:
-        update_user(ctx.author.id, embers=user[1])
+        update_user(ctx.author.id, embers=user['embers'])
         await ctx.send("Draw! Embers returned.")
     else:
         await ctx.send("You lose. Embers gone.")
@@ -1249,11 +1250,11 @@ async def shells(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     pearl = random.randint(1, 3)
     await ctx.send("Shells shuffled! Pick 1, 2, or 3.")
@@ -1270,7 +1271,7 @@ async def shells(ctx, amount: int):
 
     if pick == pearl:
         winnings = amount * 2
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Pearl found! Won {winnings} embers (2x).")
     else:
         await ctx.send(f"Empty! Pearl was under shell {pearl}. Embers lost.")
@@ -1288,18 +1289,18 @@ async def flip(ctx, amount: int, choice: str):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     result = random.choice(["heads", "tails"])
     await ctx.send(f"Coin flip... {result.upper()}!")
 
     if choice == result:
         winnings = amount * 2
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"You win! Got {winnings} embers (2x).")
     else:
         await ctx.send("Wrong side. Embers lost.")
@@ -1312,30 +1313,30 @@ async def spin(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     roll = random.random()
     if roll < 0.50:
         await ctx.send("Wheel: LOSE. Embers gone.")
     elif roll < 0.80:
         winnings = int(amount * 1.5)
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Wheel: 1.5x! Won {winnings} embers.")
     elif roll < 0.95:
         winnings = amount * 2
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Wheel: 2x! Won {winnings} embers.")
     elif roll < 0.99:
         winnings = amount * 3
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Wheel: 3x! Won {winnings} embers!")
     else:
         winnings = amount * 5
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Wheel: 5x JACKPOT! Won {winnings} embers!!!")
 
 @bot.command()
@@ -1346,11 +1347,11 @@ async def surge(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     multiplier = 1.0
     await ctx.send("Surge started at 1.0x! Type `cash` to cash out or `hold` to keep going.")
@@ -1374,7 +1375,7 @@ async def surge(ctx, amount: int):
             msg = await bot.wait_for("message", timeout=15.0, check=check)
             if msg.content.lower() == "cash":
                 winnings = int(amount * multiplier)
-                update_user(ctx.author.id, embers=user[1]-amount+winnings)
+                update_user(ctx.author.id, embers=user['embers']-amount+winnings)
                 await ctx.send(f"Cashed out at {multiplier}x! Won {winnings} embers.")
                 return
         except asyncio.TimeoutError:
@@ -1389,11 +1390,11 @@ async def vault(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     code = str(random.randint(0, 999)).zfill(3)
     await ctx.send("Vault code is 3 digits (000-999). You have 3 guesses!")
@@ -1411,7 +1412,7 @@ async def vault(ctx, amount: int):
 
         if guess == code:
             winnings = amount * 10
-            update_user(ctx.author.id, embers=user[1]-amount+winnings)
+            update_user(ctx.author.id, embers=user['embers']-amount+winnings)
             await ctx.send(f"VAULT CRACKED! Code was {code}. Won {winnings} embers (10x)!")
             return
         else:
@@ -1432,18 +1433,18 @@ async def pick(ctx, amount: int, number: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     result = random.randint(1, 10)
     await ctx.send(f"Number drawn: {result}")
 
     if number == result:
         winnings = amount * 3
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Exact match! Won {winnings} embers (3x).")
     else:
         await ctx.send("No match. Embers lost.")
@@ -1460,11 +1461,11 @@ async def chase(ctx, amount: int, pick: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     racers = [
         ("Swiftling", 2),
@@ -1481,7 +1482,7 @@ async def chase(ctx, amount: int, pick: int):
 
     if pick == winner_idx:
         winnings = int(amount * winner[1])
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Your pick won! Odds {winner[1]}x. Won {winnings} embers.")
     else:
         await ctx.send("Your creature lost. Embers gone.")
@@ -1494,11 +1495,11 @@ async def chamber(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     await ctx.send("Chamber has 6 slots. 1 is loaded. Type `spin` to pull trigger or `stop` to cash out 1.2x.")
 
@@ -1517,7 +1518,7 @@ async def chamber(ctx, amount: int):
 
         if msg.content.lower() == "stop":
             winnings = int(amount * 1.2)
-            update_user(ctx.author.id, embers=user[1]-amount+winnings)
+            update_user(ctx.author.id, embers=user['embers']-amount+winnings)
             await ctx.send(f"Cashed out! Won {winnings} embers (1.2x).")
             return
 
@@ -1536,15 +1537,15 @@ async def rig(ctx, amount: int):
         return
 
     user = get_user(ctx.author.id)
-    if amount > user[1] or amount < 1:
+    if amount > user['embers'] or amount < 1:
         await ctx.send("Invalid amount.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
 
     if random.random() < 0.25:
         winnings = amount * 2
-        update_user(ctx.author.id, embers=user[1]-amount+winnings)
+        update_user(ctx.author.id, embers=user['embers']-amount+winnings)
         await ctx.send(f"Rig successful! Won {winnings} embers (2x).")
     else:
         ban_until = (datetime.now() + timedelta(minutes=3)).isoformat()
@@ -1559,8 +1560,8 @@ async def marry(ctx, member: discord.Member):
         return
 
     user = get_user(ctx.author.id)
-    if user[7]:
-        married = bot.get_user(user[7])
+    if user['married_to']:
+        married = bot.get_user(user['married_to'])
         name = married.display_name if married else "someone"
         await ctx.send(f"Already married to {name}!")
         return
@@ -1583,11 +1584,11 @@ async def marry(ctx, member: discord.Member):
 @bot.command()
 async def divorce(ctx):
     user = get_user(ctx.author.id)
-    if not user[7]:
+    if not user['married_to']:
         await ctx.send("Not married.")
         return
 
-    partner_id = user[7]
+    partner_id = user['married_to']
     update_user(ctx.author.id, married_to=None)
     update_user(partner_id, married_to=None)
 
@@ -1607,7 +1608,7 @@ async def cult(ctx, *, name: str):
         return
 
     user = get_user(ctx.author.id)
-    if user[9]:
+    if user['cult_id']:
         await ctx.send("Already in a cult. Betray it first.")
         return
 
@@ -1617,16 +1618,16 @@ async def cult(ctx, *, name: str):
 @bot.command()
 async def betray(ctx):
     user = get_user(ctx.author.id)
-    if not user[9]:
+    if not user['cult_id']:
         await ctx.send("Not in a cult.")
         return
 
-    if user[11] == ctx.author.id:
+    if user['cult_leader'] == ctx.author.id:
         await ctx.send("You can't betray your own cult. Disband it instead.")
         return
 
     profit = random.randint(50, 200)
-    update_user(ctx.author.id, embers=user[1]+profit, cult_id=None, cult_name=None, cult_leader=None)
+    update_user(ctx.author.id, embers=user['embers']+profit, cult_id=None, cult_name=None, cult_leader=None)
     await ctx.send(f"Betrayed the cult for {profit} embers. Cold.")
 
 @bot.command()
@@ -1637,15 +1638,15 @@ async def tribute(ctx):
         return
 
     user = get_user(ctx.author.id)
-    amount = min(50, user[1])
+    amount = min(50, user['embers'])
 
     if amount < 1:
         await ctx.send("Too poor to tribute.")
         return
 
-    update_user(ctx.author.id, embers=user[1]-amount)
+    update_user(ctx.author.id, embers=user['embers']-amount)
     owner_data = get_user(owner.id)
-    update_user(owner.id, embers=owner_data[1]+amount)
+    update_user(owner.id, embers=owner_data['embers']+amount)
 
     await ctx.send(f"Paid {amount} embers tribute to {owner.display_name}. They probably won't notice.")
 
@@ -1670,7 +1671,10 @@ async def confess(ctx, *, confession: str):
         return
 
     await ctx.send(f"Anonymous confession: {confession}")
-    await ctx.message.delete()
+    try:
+        await ctx.message.delete()
+    except:
+        pass
 
 # ========== UTILITY ==========
 @bot.command()
@@ -1696,17 +1700,18 @@ async def stats(ctx):
     user = get_user(ctx.author.id)
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM creatures WHERE user_id = ?", (ctx.author.id,))
-    creature_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) as count FROM creatures WHERE user_id = ?", (ctx.author.id,))
+    res = c.fetchone()
+    creature_count = res['count']
     conn.close()
 
     embed = discord.Embed(title=f"{ctx.author.display_name}'s Stats", color=0x3498DB)
-    embed.add_field(name="Embers", value=user[1], inline=True)
-    embed.add_field(name="Streak", value=f"{user[2]} days", inline=True)
+    embed.add_field(name="Embers", value=user['embers'], inline=True)
+    embed.add_field(name="Streak", value=f"{user['daily_streak']} days", inline=True)
     embed.add_field(name="Creatures", value=creature_count, inline=True)
-    embed.add_field(name="Loan", value=f"{user[7]} embers" if user[7] > 0 else "None", inline=True)
-    embed.add_field(name="Married", value="Yes" if user[7] else "No", inline=True)
-    embed.add_field(name="Cult", value=user[10] if user[10] else "None", inline=True)
+    embed.add_field(name="Loan", value=f"{user['loan']} embers" if user['loan'] > 0 else "None", inline=True)
+    embed.add_field(name="Married", value="Yes" if user['married_to'] else "No", inline=True)
+    embed.add_field(name="Cult", value=user['cult_name'] if user['cult_name'] else "None", inline=True)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -1718,10 +1723,10 @@ async def server(ctx):
     conn.close()
 
     embed = discord.Embed(title=f"{ctx.guild.name} Leaderboard", color=0xFFD93D)
-    for i, (uid, embers) in enumerate(rows, 1):
-        user = bot.get_user(uid)
-        name = user.display_name if user else f"User {uid}"
-        embed.add_field(name=f"#{i} {name}", value=f"{embers} embers", inline=False)
+    for i, row in enumerate(rows, 1):
+        user = bot.get_user(row['user_id'])
+        name = user.display_name if user else f"User {row['user_id']}"
+        embed.add_field(name=f"#{i} {name}", value=f"{row['embers']} embers", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -1733,18 +1738,17 @@ async def global_leaderboard(ctx):
     conn.close()
 
     embed = discord.Embed(title="Global Leaderboard", color=0xFFD93D)
-    for i, (uid, embers) in enumerate(rows, 1):
-        user = bot.get_user(uid)
-        name = user.display_name if user else f"User {uid}"
-        embed.add_field(name=f"#{i} {name}", value=f"{embers} embers", inline=False)
+    for i, row in enumerate(rows, 1):
+        user = bot.get_user(row['user_id'])
+        name = user.display_name if user else f"User {row['user_id']}"
+        embed.add_field(name=f"#{i} {name}", value=f"{row['embers']} embers", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command()
 async def settings(ctx, *, setting: str = None):
     if not setting:
         embed = discord.Embed(title="Settings", color=0x95A5A6)
-        embed.add_field(name="Available", value="`notifications` - toggle DMs
-`compact` - shorter messages", inline=False)
+        embed.add_field(name="Available", value="`notifications` - toggle DMs\n`compact` - shorter messages", inline=False)
         await ctx.send(embed=embed)
         return
 
@@ -1757,8 +1761,8 @@ async def cooldowns(ctx):
 
     embed = discord.Embed(title="Your Cooldowns", color=0xE74C3C)
 
-    if user[3]:
-        last_daily = datetime.fromisoformat(user[3])
+    if user['last_daily']:
+        last_daily = datetime.fromisoformat(user['last_daily'])
         diff = now - last_daily
         if diff < timedelta(hours=20):
             wait = timedelta(hours=20) - diff
@@ -1768,8 +1772,8 @@ async def cooldowns(ctx):
     else:
         embed.add_field(name="Daily", value="Ready!", inline=False)
 
-    if user[9]:
-        ban = datetime.fromisoformat(user[9])
+    if user['gambling_ban_until']:
+        ban = datetime.fromisoformat(user['gambling_ban_until'])
         if ban > now:
             wait = ban - now
             embed.add_field(name="Gambling Ban", value=f"{wait.seconds//60}m {wait.seconds%60}s", inline=False)
@@ -1812,8 +1816,7 @@ async def bless(ctx, member: discord.Member):
 @bot.command()
 async def time(ctx):
     now = datetime.now()
-    await ctx.send(f"Server time: {now.strftime('%Y-%m-%d %H:%M:%S')}
-Some commands are affected by time of day! (simulated)")
+    await ctx.send(f"Server time: {now.strftime('%Y-%m-%d %H:%M:%S')}\nSome commands are affected by time of day! (simulated)")
 
 @bot.command()
 async def weather(ctx):
@@ -1828,8 +1831,7 @@ async def weather(ctx):
         "Eclipse": "Legendary creatures possible! Everything else breaks."
     }
 
-    await ctx.send(f"Current weather: {weather}
-{effects[weather]}")
+    await ctx.send(f"Current weather: {weather}\n{effects[weather]}")
 
 @bot.command()
 async def oracle(ctx, *, question: str):
@@ -1845,8 +1847,7 @@ async def oracle(ctx, *, question: str):
         "The creatures are divided. Flip a coin.",
         "Absolutely... not."
     ]
-    await ctx.send(f"Q: {question}
-A: {random.choice(answers)}")
+    await ctx.send(f"Q: {question}\nA: {random.choice(answers)}")
 
 @bot.command()
 async def mimic(ctx, member: discord.Member):
@@ -1881,10 +1882,10 @@ async def lore(ctx):
 @bot.command()
 async def quit(ctx):
     user = get_user(ctx.author.id)
-    if user[8]:
-        heir = bot.get_user(user[8])
+    if user['will_to']:
+        heir = bot.get_user(user['will_to'])
         heir_name = heir.display_name if heir else "someone"
-        await ctx.send(f"Account 'deleted'. {heir_name} inherits your {user[1]} embers. (Just kidding - nothing was deleted. Use `flame will` to actually set an heir)")
+        await ctx.send(f"Account 'deleted'. {heir_name} inherits your {user['embers']} embers. (Just kidding - nothing was deleted. Use `flame will` to actually set an heir)")
     else:
         await ctx.send("You can't quit. No one can quit. The Flame consumes all. (Account still active)")
 
