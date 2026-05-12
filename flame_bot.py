@@ -425,3 +425,14 @@ async def lore(ctx):
         "Flame Bot isn't a bot. It's a containment unit."
     ]
     await ctx.send(f"📜 {random.choice(lore_bits)}")
+
+# ==========================================
+# FINAL EXECUTION - MUST BE AT THE VERY BOTTOM
+# ==========================================
+
+print("Checking for Token...")
+if TOKEN is None:
+    print("ERROR: DISCORD_TOKEN variable is empty!")
+else:
+    print("Token found. Starting bot...")
+    bot.run(TOKEN)
