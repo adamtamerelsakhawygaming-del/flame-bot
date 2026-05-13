@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 TOKEN = os.getenv('DISCORD_TOKEN')
-PREFIX = 'f'
+PREFIX = 'f '
 OWNER_ID = 1444293963812180120
 
 intents = discord.Intents.default()
