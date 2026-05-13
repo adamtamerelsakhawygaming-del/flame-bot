@@ -3285,5 +3285,2408 @@ async def quest(ctx):
     data = get_user_data(ctx.author.id)
     quests = [
         ("slay 5 goblins", 100),
-        ("find the lost treasure", 20
-Preview truncated for large file
+        ("find the lost treasure", 200),
+        ("rescue the princess", 300),
+        ("defeat the dragon", 500),
+        ("deliver a package", 50)
+    ]
+    q, reward = random.choice(quests)
+    await ctx.send(f"quest accepted: {q}! reward: {reward} embers! (auto-completed for demo)")
+    data["embers"] += reward
+    save()
+    await ctx.send(f"quest complete! you earned {reward} embers!")
+
+# ========== MORE COMMANDS (batch 5) ==========
+
+@bot.command()
+async def pet(ctx, creature_id: int):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        if c["id"] == creature_id:
+            c["mood"] = min(100, c["mood"] + 10)
+            save()
+            await ctx.send(f"you petted {c['name']}! mood: {c['mood']}/100. happy creature!")
+            return
+    await ctx.send("creature not found")
+
+@bot.command()
+async def play(ctx, creature_id: int):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        if c["id"] == creature_id:
+            c["mood"] = min(100, c["mood"] + 15)
+            c["power"] += random.randint(1, 3)
+            save()
+            await ctx.send(f"you played with {c['name']}! mood: {c['mood']}/100, power: {c['power']}")
+            return
+    await ctx.send("creature not found")
+
+@bot.command()
+async def train(ctx, creature_id: int):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        if c["id"] == creature_id:
+            c["power"] += random.randint(5, 15)
+            c["mood"] = max(0, c["mood"] - 5)
+            save()
+            await ctx.send(f"you trained {c['name']}! power: {c['power']}, mood: {c['mood']}/100. tough love!")
+            return
+    await ctx.send("creature not found")
+
+@bot.command()
+async def heal(ctx, creature_id: int):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        if c["id"] == creature_id:
+            if data["embers"] < 30:
+                await ctx.send("healing costs 30 embers, you're too broke")
+                return
+            data["embers"] -= 30
+            c["mood"] = 100
+            save()
+            await ctx.send(f"you healed {c['name']}! mood restored to 100/100!")
+            return
+    await ctx.send("creature not found")
+
+@bot.command()
+async def releaseall(ctx):
+    data = get_user_data(ctx.author.id)
+    count = len(data["creatures"])
+    data["creatures"] = []
+    save()
+    await ctx.send(f"you released all {count} creatures. they're free now. you monster.")
+
+@bot.command()
+async def sacrificeall(ctx):
+    data = get_user_data(ctx.author.id)
+    total = sum(c["power"] * 2 for c in data["creatures"])
+    count = len(data["creatures"])
+    data["embers"] += total
+    data["creatures"] = []
+    save()
+    await ctx.send(f"you sacrificed all {count} creatures for {total} embers. the dark gods are very pleased.")
+
+@bot.command()
+async def creatureinfo(ctx, creature_id: int):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        if c["id"] == creature_id:
+            await ctx.send(f"{c['name']} | type: {c['type']} | power: {c['power']} | mood: {c['mood']}/100 | evolution: {c['evolution']} | id: {c['id']}")
+            return
+    await ctx.send("creature not found")
+
+@bot.command()
+async def strongest(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    strongest = max(data["creatures"], key=lambda c: c["power"])
+    await ctx.send(f"your strongest creature is {strongest['name']} with {strongest['power']} power!")
+
+@bot.command()
+async def weakest(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    weakest = min(data["creatures"], key=lambda c: c["power"])
+    await ctx.send(f"your weakest creature is {weakest['name']} with {weakest['power']} power. pathetic.")
+
+@bot.command()
+async def happiest(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    happiest = max(data["creatures"], key=lambda c: c["mood"])
+    await ctx.send(f"your happiest creature is {happiest['name']} with {happiest['mood']}/100 mood!")
+
+@bot.command()
+async def saddest(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    saddest = min(data["creatures"], key=lambda c: c["mood"])
+    await ctx.send(f"your saddest creature is {saddest['name']} with {saddest['mood']}/100 mood. feed it!")
+
+@bot.command()
+async def creaturecount(ctx):
+    data = get_user_data(ctx.author.id)
+    await ctx.send(f"you have {len(data['creatures'])} creatures")
+
+@bot.command()
+async def totalpower(ctx):
+    data = get_user_data(ctx.author.id)
+    total = sum(c["power"] for c in data["creatures"])
+    await ctx.send(f"your creatures' total power is {total}")
+
+@bot.command()
+async def totalmood(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    avg = sum(c["mood"] for c in data["creatures"]) // len(data["creatures"])
+    await ctx.send(f"your creatures' average mood is {avg}/100")
+
+@bot.command()
+async def sortpower(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    sorted_c = sorted(data["creatures"], key=lambda c: c["power"], reverse=True)
+    embed = discord.Embed(title="creatures by power", color=0xff4500)
+    for c in sorted_c[:10]:
+        embed.add_field(name=f"{c['name']} (id: {c['id']})", value=f"power: {c['power']}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def sortmood(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures")
+        return
+    sorted_c = sorted(data["creatures"], key=lambda c: c["mood"], reverse=True)
+    embed = discord.Embed(title="creatures by mood", color=0xff4500)
+    for c in sorted_c[:10]:
+        embed.add_field(name=f"{c['name']} (id: {c['id']})", value=f"mood: {c['mood']}/100", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def sorttype(ctx, *, ctype: str):
+    data = get_user_data(ctx.author.id)
+    filtered = [c for c in data["creatures"] if c["type"].lower() == ctype.lower()]
+    if not filtered:
+        await ctx.send(f"you have no {ctype} type creatures")
+        return
+    embed = discord.Embed(title=f"{ctype} type creatures", color=0xff4500)
+    for c in filtered:
+        embed.add_field(name=f"{c['name']} (id: {c['id']})", value=f"power: {c['power']}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def dupecheck(ctx):
+    data = get_user_data(ctx.author.id)
+    names = [c["name"] for c in data["creatures"]]
+    dupes = [n for n in set(names) if names.count(n) > 1]
+    if dupes:
+        await ctx.send(f"you have duplicates: {', '.join(dupes)}")
+    else:
+        await ctx.send("no duplicates. all unique!")
+
+@bot.command()
+async def releaseweak(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures to release")
+        return
+    weakest = min(data["creatures"], key=lambda c: c["power"])
+    data["creatures"].remove(weakest)
+    save()
+    await ctx.send(f"released your weakest creature: {weakest['name']} (power: {weakest['power']}). bye bye!")
+
+@bot.command()
+async def releasesad(ctx):
+    data = get_user_data(ctx.author.id)
+    if not data["creatures"]:
+        await ctx.send("you have no creatures to release")
+        return
+    saddest = min(data["creatures"], key=lambda c: c["mood"])
+    data["creatures"].remove(saddest)
+    save()
+    await ctx.send(f"released your saddest creature: {saddest['name']} (mood: {saddest['mood']}/100). it'll be happier free!")
+
+@bot.command()
+async def massfeed(ctx):
+    data = get_user_data(ctx.author.id)
+    cost = len(data["creatures"]) * 20
+    if data["embers"] < cost:
+        await ctx.send(f"mass feed costs {cost} embers, you're too broke")
+        return
+    data["embers"] -= cost
+    for c in data["creatures"]:
+        c["mood"] = min(100, c["mood"] + 10)
+    save()
+    await ctx.send(f"fed all {len(data['creatures'])} creatures for {cost} embers! everyone's happier!")
+
+@bot.command()
+async def masstrain(ctx):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        c["power"] += random.randint(2, 8)
+        c["mood"] = max(0, c["mood"] - 3)
+    save()
+    await ctx.send(f"trained all {len(data['creatures'])} creatures! stronger but slightly sadder.")
+
+@bot.command()
+async def massevolve(ctx):
+    data = get_user_data(ctx.author.id)
+    evolved = 0
+    for c in data["creatures"]:
+        if c["power"] >= 80 and c["mood"] >= 60:
+            c["evolution"] += 1
+            c["power"] += random.randint(20, 50)
+            c["name"] = f"mega {c['name']}"
+            evolved += 1
+    save()
+    if evolved:
+        await ctx.send(f"{evolved} creatures evolved! check f creatures!")
+    else:
+        await ctx.send("no creatures ready to evolve. train and feed them first!")
+
+@bot.command()
+async def creatureleaderboard(ctx):
+    all_creatures = []
+    for uid, data in bot.data.items():
+        for c in data["creatures"]:
+            all_creatures.append((c, uid))
+    if not all_creatures:
+        await ctx.send("no creatures exist yet")
+        return
+    all_creatures.sort(key=lambda x: x[0]["power"], reverse=True)
+    embed = discord.Embed(title="global creature leaderboard", color=0xff4500)
+    for i, (c, uid) in enumerate(all_creatures[:10]):
+        owner = bot.get_user(uid)
+        owner_name = owner.name if owner else f"user {uid}"
+        embed.add_field(name=f"#{i+1} {c['name']}", value=f"power: {c['power']} | owner: {owner_name}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def tradeall(ctx, member: discord.Member):
+    if member.id == ctx.author.id:
+        await ctx.send("trading all with yourself? that's just... keeping them")
+        return
+    your_data = get_user_data(ctx.author.id)
+    their_data = get_user_data(member.id)
+    if not your_data["creatures"] or not their_data["creatures"]:
+        await ctx.send("one of you has no creatures to trade")
+        return
+    msg = await ctx.send(f"{member.mention}, {ctx.author.mention} wants to trade ALL their creatures for ALL yours! react check to accept!")
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
+    def check(reaction, user):
+        return user == member and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
+    try:
+        reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+        if str(reaction.emoji) == "✅":
+            your_creatures = your_data["creatures"].copy()
+            their_creatures = their_data["creatures"].copy()
+            your_data["creatures"] = their_creatures
+            their_data["creatures"] = your_creatures
+            save()
+            await ctx.send(f"mass trade complete! you swapped all creatures!")
+        else:
+            await ctx.send("trade rejected")
+    except asyncio.TimeoutError:
+        await ctx.send("trade timed out")
+
+@bot.command()
+async def clone(ctx, creature_id: int):
+    ok, _ = check_cooldown(ctx.author.id, "clone", hours=6)
+    if not ok:
+        await ctx.send("cloning machine is cooling down, wait")
+        return
+    data = get_user_data(ctx.author.id)
+    creature = next((c for c in data["creatures"] if c["id"] == creature_id), None)
+    if not creature:
+        await ctx.send("creature not found")
+        return
+    if data["embers"] < 500:
+        await ctx.send("cloning costs 500 embers, you're too broke")
+        return
+    data["embers"] -= 500
+    clone_c = creature.copy()
+    clone_c["id"] = random.randint(1000, 9999)
+    clone_c["name"] = f"clone {clone_c['name']}"
+    clone_c["power"] = clone_c["power"] // 2
+    data["creatures"].append(clone_c)
+    save()
+    await ctx.send(f"cloned {creature['name']}! meet {clone_c['name']}! (weaker clone but still cool)")
+
+@bot.command()
+async def merge(ctx, id1: int, id2: int):
+    data = get_user_data(ctx.author.id)
+    c1 = next((c for c in data["creatures"] if c["id"] == id1), None)
+    c2 = next((c for c in data["creatures"] if c["id"] == id2), None)
+    if not c1 or not c2:
+        await ctx.send("one or both creatures not found")
+        return
+    data["creatures"].remove(c1)
+    data["creatures"].remove(c2)
+    merged = {
+        "name": f"fusion {c1['name']}-{c2['name']}",
+        "type": random.choice([c1["type"], c2["type"]]),
+        "power": c1["power"] + c2["power"],
+        "mood": 80,
+        "evolution": max(c1["evolution"], c2["evolution"]),
+        "favorite": False,
+        "id": random.randint(1000, 9999)
+    }
+    data["creatures"].append(merged)
+    save()
+    await ctx.send(f"merged {c1['name']} and {c2['name']} into {merged['name']}! power: {merged['power']}!")
+
+@bot.command()
+async def releasefav(ctx):
+    data = get_user_data(ctx.author.id)
+    favs = [c for c in data["creatures"] if c["favorite"]]
+    if not favs:
+        await ctx.send("you have no favorited creatures")
+        return
+    for c in favs:
+        data["creatures"].remove(c)
+    save()
+    await ctx.send(f"released {len(favs)} favorited creatures. why would you do that")
+
+@bot.command()
+async def favoritelist(ctx):
+    data = get_user_data(ctx.author.id)
+    favs = [c for c in data["creatures"] if c["favorite"]]
+    if not favs:
+        await ctx.send("you have no favorited creatures")
+        return
+    names = ", ".join(c["name"] for c in favs)
+    await ctx.send(f"your favorites: {names}")
+
+@bot.command()
+async def unfavoriteall(ctx):
+    data = get_user_data(ctx.author.id)
+    for c in data["creatures"]:
+        c["favorite"] = False
+    save()
+    await ctx.send("unfavorited all creatures. no favorites anymore.")
+
+@bot.command()
+async def creaturesearch(ctx, *, name: str):
+    data = get_user_data(ctx.author.id)
+    matches = [c for c in data["creatures"] if name.lower() in c["name"].lower()]
+    if not matches:
+        await ctx.send(f"no creatures matching '{name}'")
+        return
+    embed = discord.Embed(title=f"search results for '{name}'", color=0xff4500)
+    for c in matches:
+        embed.add_field(name=f"{c['name']} (id: {c['id']})", value=f"power: {c['power']} | mood: {c['mood']}/100", inline=False)
+    await ctx.send(embed=embed)
+
+# ========== MORE COMMANDS (batch 6) ==========
+
+@bot.command()
+async def afk(ctx, *, reason: str = "afk"):
+    if not hasattr(bot, "afk_users"):
+        bot.afk_users = {}
+    bot.afk_users[ctx.author.id] = reason
+    await ctx.send(f"{ctx.author.mention} is now afk: {reason}")
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    if hasattr(bot, "afk_users") and message.author.id in bot.afk_users:
+        del bot.afk_users[message.author.id]
+        await message.channel.send(f"welcome back {message.author.mention}! i removed your afk status.")
+    for mention in message.mentions:
+        if hasattr(bot, "afk_users") and mention.id in bot.afk_users:
+            await message.channel.send(f"{mention.mention} is afk: {bot.afk_users[mention.id]}")
+    await bot.process_commands(message)
+
+@bot.command()
+async def snipe(ctx):
+    if not hasattr(bot, "deleted_messages") or not bot.deleted_messages.get(ctx.channel.id):
+        await ctx.send("nothing to snipe. someone delete a message first")
+        return
+    msg = bot.deleted_messages[ctx.channel.id][-1]
+    embed = discord.Embed(description=msg["content"], color=0xff4500)
+    embed.set_author(name=msg["author"], icon_url=msg["avatar"])
+    embed.set_footer(text=f"deleted in #{ctx.channel.name}")
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def editsnipe(ctx):
+    if not hasattr(bot, "edited_messages") or not bot.edited_messages.get(ctx.channel.id):
+        await ctx.send("nothing to editsnipe. someone edit a message first")
+        return
+    msg = bot.edited_messages[ctx.channel.id][-1]
+    embed = discord.Embed(color=0xff4500)
+    embed.add_field(name="before", value=msg["before"], inline=False)
+    embed.add_field(name="after", value=msg["after"], inline=False)
+    embed.set_author(name=msg["author"])
+    await ctx.send(embed=embed)
+
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot:
+        return
+    if not hasattr(bot, "deleted_messages"):
+        bot.deleted_messages = {}
+    if message.channel.id not in bot.deleted_messages:
+        bot.deleted_messages[message.channel.id] = []
+    bot.deleted_messages[message.channel.id].append({
+        "content": message.content,
+        "author": message.author.name,
+        "avatar": message.author.display_avatar.url
+    })
+    if len(bot.deleted_messages[message.channel.id]) > 10:
+        bot.deleted_messages[message.channel.id].pop(0)
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot:
+        return
+    if not hasattr(bot, "edited_messages"):
+        bot.edited_messages = {}
+    if before.channel.id not in bot.edited_messages:
+        bot.edited_messages[before.channel.id] = []
+    bot.edited_messages[before.channel.id].append({
+        "before": before.content,
+        "after": after.content,
+        "author": before.author.name
+    })
+    if len(bot.edited_messages[before.channel.id]) > 10:
+        bot.edited_messages[before.channel.id].pop(0)
+
+@bot.command()
+async def firstmsg(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    async for msg in channel.history(limit=1, oldest_first=True):
+        embed = discord.Embed(description=msg.content, color=0xff4500)
+        embed.set_author(name=msg.author.name, icon_url=msg.author.display_avatar.url)
+        embed.set_footer(text=f"sent on {msg.created_at.strftime('%Y-%m-%d')}")
+        await ctx.send(embed=embed)
+        return
+    await ctx.send("no messages found")
+
+@bot.command()
+async def translate(ctx, lang: str, *, text: str):
+    await ctx.send("translation is hard. just learn the language. lazy.")
+
+@bot.command()
+async def define(ctx, *, word: str):
+    await ctx.send(f"{word}: something that exists. probably. look it up yourself.")
+
+@bot.command()
+async def synonym(ctx, *, word: str):
+    await ctx.send(f"synonyms for {word}: {word} but different. use a thesaurus.")
+
+@bot.command()
+async def antonym(ctx, *, word: str):
+    await ctx.send(f"antonym for {word}: not {word}. obvious.")
+
+@bot.command()
+async def rhyme(ctx, *, word: str):
+    rhymes = {"cat": "hat, bat, rat", "dog": "log, fog, hog", "blue": "true, clue, shoe"}
+    await ctx.send(rhymes.get(word.lower(), f"words that rhyme with {word}: idk, google it"))
+
+@bot.command()
+async def weatherreal(ctx, *, city: str):
+    await ctx.send(f"weather in {city}: probably nice. maybe rainy. who knows. go outside and check.")
+
+@bot.command()
+async def news(ctx):
+    await ctx.send("latest news: the world is still spinning. embers are still valuable. that's all.")
+
+@bot.command()
+async def stock(ctx, *, symbol: str):
+    prices = {"aapl": 150, "tsla": 200, "goog": 100, "msft": 300, "amzn": 120}
+    price = prices.get(symbol.lower(), random.randint(10, 500))
+    change = random.uniform(-5, 5)
+    await ctx.send(f"{symbol.upper()}: ${price:.2f} ({change:+.2f}%) not financial advice")
+
+@bot.command()
+async def crypto(ctx, *, coin: str):
+    prices = {"btc": 45000, "eth": 3000, "doge": 0.1, "shib": 0.00001}
+    price = prices.get(coin.lower(), random.uniform(0.001, 1000))
+    await ctx.send(f"{coin.upper()}: ${price:.4f} probably gonna crash soon")
+
+@bot.command()
+async def movie(ctx, *, title: str):
+    ratings = ["10/10 masterpiece", "8/10 pretty good", "5/10 mid", "2/10 garbage", "would not watch"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def game(ctx, *, title: str):
+    ratings = ["goty material", "solid 8/10", "mid", "trash", "masterpiece"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def song(ctx, *, title: str):
+    ratings = ["banger", "fire", "mid", "skip", "repeat worthy"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def foodrate(ctx, *, food: str):
+    ratings = ["delicious", "mid", "gross", "fire", "would eat again"]
+    await ctx.send(f"{food}: {random.choice(ratings)}")
+
+@bot.command()
+async def drinkrate(ctx, *, drink: str):
+    ratings = ["refreshing", "mid", "nasty", "fire", "would drink again"]
+    await ctx.send(f"{drink}: {random.choice(ratings)}")
+
+@bot.command()
+async def place(ctx, *, location: str):
+    ratings = ["beautiful", "mid", "trash", "must visit", "overrated"]
+    await ctx.send(f"{location}: {random.choice(ratings)}")
+
+@bot.command()
+async def car(ctx, *, model: str):
+    ratings = ["fast", "mid", "slow", "luxury", "budget"]
+    await ctx.send(f"{model}: {random.choice(ratings)}")
+
+@bot.command()
+async def phone(ctx, *, model: str):
+    ratings = ["flagship", "mid", "budget", "overpriced", "solid"]
+    await ctx.send(f"{model}: {random.choice(ratings)}")
+
+@bot.command()
+async def pc(ctx, *, specs: str = "gaming pc"):
+    fps = random.randint(30, 300)
+    await ctx.send(f"{specs}: runs at {fps} fps on low settings. skill issue.")
+
+@bot.command()
+async def console(ctx, *, name: str = "ps5"):
+    ratings = ["exclusive games", "mid", "overpriced", "solid", "pc is better"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def anime(ctx, *, title: str):
+    ratings = ["peak fiction", "mid", "trash", "masterpiece", "overrated"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def manga(ctx, *, title: str):
+    ratings = ["better than anime", "mid", "trash", "masterpiece", "overrated"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def book(ctx, *, title: str):
+    ratings = ["page turner", "mid", "boring", "masterpiece", "overrated"]
+    await ctx.send(f"{title}: {random.choice(ratings)}")
+
+@bot.command()
+async def tv(ctx, *, show: str):
+    ratings = ["binge worthy", "mid", "cancel it", "masterpiece", "overrated"]
+    await ctx.send(f"{show}: {random.choice(ratings)}")
+
+@bot.command()
+async def youtuber(ctx, *, name: str):
+    ratings = ["content king", "mid", "clickbait", "legend", "overrated"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def twitch(ctx, *, streamer: str):
+    ratings = ["pog", "mid", "boring", "legend", "overrated"]
+    await ctx.send(f"{streamer}: {random.choice(ratings)}")
+
+@bot.command()
+async def sport(ctx, *, name: str):
+    ratings = ["exciting", "mid", "boring", "intense", "overrated"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def team(ctx, *, name: str):
+    ratings = ["champions", "mid", "relegation", "dark horse", "overrated"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def player(ctx, *, name: str):
+    ratings = ["goat", "mid", "washed", "rising star", "overrated"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def brand(ctx, *, name: str):
+    ratings = ["hype", "mid", "overpriced", "quality", "overrated"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def shoe(ctx, *, model: str):
+    ratings = ["fire", "mid", "ugly", "comfortable", "overpriced"]
+    await ctx.send(f"{model}: {random.choice(ratings)}")
+
+@bot.command()
+async def clothes(ctx, *, item: str):
+    ratings = ["drip", "mid", "trash", "fire", "overpriced"]
+    await ctx.send(f"{item}: {random.choice(ratings)}")
+
+@bot.command()
+async def haircut(ctx, *, style: str):
+    ratings = ["fresh", "mid", "trash", "fire", "what is that"]
+    await ctx.send(f"{style}: {random.choice(ratings)}")
+
+@bot.command()
+async def tattoo(ctx, *, design: str):
+    ratings = ["sick", "mid", "regret", "fire", "why"]
+    await ctx.send(f"{design}: {random.choice(ratings)}")
+
+@bot.command()
+async def petrate(ctx, *, animal: str):
+    ratings = ["cute", "mid", "ugly", "adorable", "terrifying"]
+    await ctx.send(f"{animal}: {random.choice(ratings)}")
+
+@bot.command()
+async def plant(ctx, *, name: str):
+    ratings = ["thriving", "mid", "dead", "beautiful", "weed"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def color(ctx, *, name: str):
+    ratings = ["aesthetic", "mid", "ugly", "fire", "basic"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def font(ctx, *, name: str):
+    ratings = ["clean", "mid", "ugly", "aesthetic", "comic sans"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def os(ctx, *, name: str):
+    ratings = ["stable", "mid", "buggy", "fast", "linux is better"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def browser(ctx, *, name: str):
+    ratings = ["fast", "mid", "slow", "secure", "chrome eats ram"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def ide(ctx, *, name: str):
+    ratings = ["powerful", "mid", "bloated", "fast", "vscode is king"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def language(ctx, *, name: str):
+    ratings = ["elegant", "mid", "verbose", "fast", "python is best"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def framework(ctx, *, name: str):
+    ratings = ["robust", "mid", "bloated", "fast", "overhyped"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def database(ctx, *, name: str):
+    ratings = ["reliable", "mid", "slow", "fast", "nosql vs sql"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def cloud(ctx, *, provider: str):
+    ratings = ["scalable", "mid", "expensive", "fast", "aws is overpriced"]
+    await ctx.send(f"{provider}: {random.choice(ratings)}")
+
+@bot.command()
+async def vpn(ctx, *, name: str):
+    ratings = ["secure", "mid", "slow", "fast", "nordvpn sponsor"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+@bot.command()
+async def antivirus(ctx, *, name: str):
+    ratings = ["secure", "mid", "bloatware", "fast", "windows defender is enough"]
+    await ctx.send(f"{name}: {random.choice(ratings)}")
+
+# ========== MORE COMMANDS (batch 7) ==========
+
+@bot.command()
+async def copypasta(ctx, *, name: str = "navy seal"):
+    pastas = {
+        "navy seal": "what the heck did you just say about me? i'll have you know i graduated top of my class...",
+        "rickroll": "never gonna give you up, never gonna let you down...",
+        "bees": "according to all known laws of aviation, there is no way a bee should be able to fly...",
+        "shrek": "somebody once told me the world is gonna roll me..."
+    }
+    await ctx.send(pastas.get(name.lower(), "copypasta not found. make your own."))
+
+@bot.command()
+async def emojify(ctx, *, text: str):
+    emojis = {"a": "a", "b": "b", "c": "c", "d": "d", "e": "e", "f": "f", "g": "g", "h": "h", "i": "i",
+              "j": "j", "k": "k", "l": "l", "m": "m", "n": "n", "o": "o", "p": "p", "q": "q", "r": "r",
+              "s": "s", "t": "t", "u": "u", "v": "v", "w": "w", "x": "x", "y": "y", "z": "z", " ": " "}
+    result = " ".join(emojis.get(c.lower(), c) for c in text)
+    await ctx.send(result)
+
+@bot.command()
+async def spoiler(ctx, *, text: str):
+    await ctx.send(f"||{text}||")
+
+@bot.command()
+async def bold(ctx, *, text: str):
+    await ctx.send(f"**{text}**")
+
+@bot.command()
+async def italic(ctx, *, text: str):
+    await ctx.send(f"*{text}*")
+
+@bot.command()
+async def underline(ctx, *, text: str):
+    await ctx.send(f"__{text}__")
+
+@bot.command()
+async def strikethrough(ctx, *, text: str):
+    await ctx.send(f"~~{text}~~")
+
+@bot.command()
+async def codeblock(ctx, *, text: str):
+    await ctx.send(f"```{text}```")
+
+@bot.command()
+async def inlinecode(ctx, *, text: str):
+    await ctx.send(f"`{text}`")
+
+@bot.command()
+async def quoteblock(ctx, *, text: str):
+    await ctx.send(f"> {text}")
+
+@bot.command()
+async def multiquote(ctx, *, text: str):
+    lines = text.split("\n")
+    quoted = "
+".join(f"> {line}" for line in lines)
+    await ctx.send(quoted)
+
+@bot.command()
+async def mention(ctx, member: discord.Member):
+    await ctx.send(f"{member.mention} you got mentioned by {ctx.author.mention}")
+
+@bot.command()
+async def everyone(ctx):
+    if not has_perm(ctx, "mention_everyone"):
+        await ctx.send("you can't ping everyone, nice try")
+        return
+    await ctx.send("@everyone wake up!")
+
+@bot.command()
+async def here(ctx):
+    if not has_perm(ctx, "mention_everyone"):
+        await ctx.send("you can't ping here, nice try")
+        return
+    await ctx.send("@here wake up!")
+
+@bot.command()
+async def roleping(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    if not has_perm(ctx, "mention_everyone") and role.mentionable == False:
+        await ctx.send("you can't ping that role")
+        return
+    await ctx.send(f"{role.mention} you got pinged!")
+
+@bot.command()
+async def dm(ctx, member: discord.Member, *, message: str):
+    try:
+        await member.send(f"message from {ctx.author.name}: {message}")
+        await ctx.send(f"sent dm to {member.mention}")
+    except:
+        await ctx.send("couldn't dm them. they probably blocked dms.")
+
+@bot.command()
+async def massdm(ctx, *, message: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    sent = 0
+    for member in ctx.guild.members:
+        if not member.bot:
+            try:
+                await member.send(message)
+                sent += 1
+            except:
+                pass
+    await ctx.send(f"sent dms to {sent} members")
+
+@bot.command()
+async def announceall(ctx, *, message: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    for guild in bot.guilds:
+        channel = guild.system_channel
+        if channel:
+            try:
+                await channel.send(f"announcement: {message}")
+            except:
+                pass
+    await ctx.send("announced in all servers")
+
+@bot.command()
+async def serverlist(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    embed = discord.Embed(title="server list", color=0xff4500)
+    for guild in bot.guilds:
+        embed.add_field(name=guild.name, value=f"{guild.member_count} members | id: {guild.id}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def leavserver(ctx, guild_id: int):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    guild = bot.get_guild(guild_id)
+    if guild:
+        await guild.leave()
+        await ctx.send(f"left {guild.name}")
+    else:
+        await ctx.send("guild not found")
+
+@bot.command()
+async def nickall(ctx, *, nickname: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    changed = 0
+    for member in ctx.guild.members:
+        if not member.bot:
+            try:
+                await member.edit(nick=nickname)
+                changed += 1
+            except:
+                pass
+    await ctx.send(f"changed {changed} nicknames to {nickname}")
+
+@bot.command()
+async def unbanall(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    bans = [entry async for entry in ctx.guild.bans()]
+    for ban in bans:
+        await ctx.guild.unban(ban.user)
+    await ctx.send(f"unbanned {len(bans)} users")
+
+@bot.command()
+async def backup(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    bot.save_data()
+    await ctx.send("data backed up to flame_data.json")
+
+@bot.command()
+async def restore(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    bot.load_data()
+    await ctx.send("data restored from flame_data.json")
+
+@bot.command()
+async def evalcmd(ctx, *, code: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    try:
+        result = eval(code)
+        await ctx.send(f"result: {result}")
+    except Exception as e:
+        await ctx.send(f"error: {e}")
+
+@bot.command()
+async def execmd(ctx, *, code: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    try:
+        exec(code)
+        await ctx.send("executed successfully")
+    except Exception as e:
+        await ctx.send(f"error: {e}")
+
+@bot.command()
+async def shutdown(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await ctx.send("shutting down...")
+    await bot.close()
+
+@bot.command()
+async def restart(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await ctx.send("restarting...")
+    await bot.close()
+
+@bot.command()
+async def status(ctx, *, text: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.change_presence(activity=discord.Game(name=text))
+    await ctx.send(f"status set to: {text}")
+
+@bot.command()
+async def playing(ctx, *, game: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.change_presence(activity=discord.Game(name=game))
+    await ctx.send(f"now playing: {game}")
+
+@bot.command()
+async def watching(ctx, *, thing: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=thing))
+    await ctx.send(f"now watching: {thing}")
+
+@bot.command()
+async def listening(ctx, *, thing: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name=thing))
+    await ctx.send(f"now listening to: {thing}")
+
+@bot.command()
+async def streaming(ctx, *, thing: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.change_presence(activity=discord.Streaming(name=thing, url="https://twitch.tv/flamebot"))
+    await ctx.send(f"now streaming: {thing}")
+
+@bot.command()
+async def setavatar(ctx, url: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    try:
+        async with bot.session.get(url) as resp:
+            await bot.user.edit(avatar=await resp.read())
+        await ctx.send("avatar updated")
+    except:
+        await ctx.send("failed to update avatar")
+
+@bot.command()
+async def setname(ctx, *, name: str):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.user.edit(username=name)
+    await ctx.send(f"name changed to {name}")
+
+@bot.command()
+async def guilds(ctx):
+    await ctx.send(f"i'm in {len(bot.guilds)} servers with {sum(g.member_count for g in bot.guilds)} total members")
+
+@bot.command()
+async def channels(ctx):
+    await ctx.send(f"this server has {len(ctx.guild.channels)} channels")
+
+@bot.command()
+async def roleslist(ctx):
+    roles = ", ".join(r.name for r in ctx.guild.roles if r.name != "@everyone")
+    await ctx.send(f"roles: {roles}")
+
+@bot.command()
+async def emojislist(ctx):
+    emojis = ", ".join(str(e) for e in ctx.guild.emojis)
+    if not emojis:
+        await ctx.send("no custom emojis in this server")
+        return
+    await ctx.send(f"custom emojis: {emojis}")
+
+@bot.command()
+async def stickerslist(ctx):
+    if not ctx.guild.stickers:
+        await ctx.send("no stickers in this server")
+        return
+    stickers = ", ".join(s.name for s in ctx.guild.stickers)
+    await ctx.send(f"stickers: {stickers}")
+
+@bot.command()
+async def banslist(ctx):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban perms for this")
+        return
+    bans = [entry async for entry in ctx.guild.bans()]
+    if not bans:
+        await ctx.send("no banned users")
+        return
+    embed = discord.Embed(title="banned users", color=0xff4500)
+    for ban in bans[:20]:
+        embed.add_field(name=ban.user.name, value=f"reason: {ban.reason or 'none'}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def invites(ctx):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    invites = await ctx.guild.invites()
+    if not invites:
+        await ctx.send("no active invites")
+        return
+    embed = discord.Embed(title="active invites", color=0xff4500)
+    for inv in invites[:10]:
+        embed.add_field(name=inv.code, value=f"uses: {inv.uses} | by: {inv.inviter.name if inv.inviter else 'unknown'}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def permissions(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    perms = []
+    for perm, value in member.guild_permissions:
+        if value:
+            perms.append(perm)
+    await ctx.send(f"{member.mention} has these perms: {', '.join(perms) if perms else 'none'}")
+
+@bot.command()
+async def channelinfo(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    embed = discord.Embed(title=f"#{channel.name} info", color=0xff4500)
+    embed.add_field(name="id", value=channel.id)
+    embed.add_field(name="created", value=channel.created_at.strftime("%Y-%m-%d"))
+    embed.add_field(name="nsfw", value=channel.is_nsfw())
+    embed.add_field(name="slowmode", value=f"{channel.slowmode_delay}s")
+    embed.add_field(name="category", value=channel.category.name if channel.category else "none")
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def roleinfo(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    embed = discord.Embed(title=f"{role.name} info", color=role.color)
+    embed.add_field(name="id", value=role.id)
+    embed.add_field(name="color", value=str(role.color))
+    embed.add_field(name="members", value=len(role.members))
+    embed.add_field(name="hoisted", value=role.hoist)
+    embed.add_field(name="mentionable", value=role.mentionable)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def voiceinfo(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    if not member.voice:
+        await ctx.send(f"{member.mention} is not in a voice channel")
+        return
+    vc = member.voice.channel
+    embed = discord.Embed(title=f"{member.name}'s voice info", color=0xff4500)
+    embed.add_field(name="channel", value=vc.name)
+    embed.add_field(name="members", value=len(vc.members))
+    embed.add_field(name="bitrate", value=f"{vc.bitrate // 1000}kbps")
+    embed.add_field(name="user limit", value=vc.user_limit or "unlimited")
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def move(ctx, member: discord.Member, channel: discord.VoiceChannel):
+    if not has_perm(ctx, "move_members"):
+        await ctx.send("you need move members perms")
+        return
+    if not member.voice:
+        await ctx.send(f"{member.mention} is not in a voice channel")
+        return
+    await member.move_to(channel)
+    await ctx.send(f"moved {member.mention} to {channel.name}")
+
+@bot.command()
+async def deafen(ctx, member: discord.Member):
+    if not has_perm(ctx, "deafen_members"):
+        await ctx.send("you need deafen members perms")
+        return
+    await member.edit(deafen=True)
+    await ctx.send(f"deafened {member.mention}")
+
+@bot.command()
+async def undeafen(ctx, member: discord.Member):
+    if not has_perm(ctx, "deafen_members"):
+        await ctx.send("you need deafen members perms")
+        return
+    await member.edit(deafen=False)
+    await ctx.send(f"undeafened {member.mention}")
+
+@bot.command()
+async def mutevoice(ctx, member: discord.Member):
+    if not has_perm(ctx, "mute_members"):
+        await ctx.send("you need mute members perms")
+        return
+    await member.edit(mute=True)
+    await ctx.send(f"voice muted {member.mention}")
+
+@bot.command()
+async def unmutevoice(ctx, member: discord.Member):
+    if not has_perm(ctx, "mute_members"):
+        await ctx.send("you need mute members perms")
+        return
+    await member.edit(mute=False)
+    await ctx.send(f"voice unmuted {member.mention}")
+
+@bot.command()
+async def disconnect(ctx, member: discord.Member):
+    if not has_perm(ctx, "move_members"):
+        await ctx.send("you need move members perms")
+        return
+    if not member.voice:
+        await ctx.send(f"{member.mention} is not in a voice channel")
+        return
+    await member.move_to(None)
+    await ctx.send(f"disconnected {member.mention} from voice")
+
+# ========== MORE COMMANDS (batch 8) ==========
+
+@bot.command()
+async def deafenall(ctx):
+    if not has_perm(ctx, "deafen_members"):
+        await ctx.send("you need deafen members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        if member != ctx.author:
+            try:
+                await member.edit(deafen=True)
+                count += 1
+            except:
+                pass
+    await ctx.send(f"deafened {count} members")
+
+@bot.command()
+async def muteall(ctx):
+    if not has_perm(ctx, "mute_members"):
+        await ctx.send("you need mute members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        if member != ctx.author:
+            try:
+                await member.edit(mute=True)
+                count += 1
+            except:
+                pass
+    await ctx.send(f"muted {count} members")
+
+@bot.command()
+async def undeafenall(ctx):
+    if not has_perm(ctx, "deafen_members"):
+        await ctx.send("you need deafen members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        try:
+            await member.edit(deafen=False)
+            count += 1
+        except:
+            pass
+    await ctx.send(f"undeafened {count} members")
+
+@bot.command()
+async def unmuteall(ctx):
+    if not has_perm(ctx, "mute_members"):
+        await ctx.send("you need mute members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        try:
+            await member.edit(mute=False)
+            count += 1
+        except:
+            pass
+    await ctx.send(f"unmuted {count} members")
+
+@bot.command()
+async def moveall(ctx, channel: discord.VoiceChannel):
+    if not has_perm(ctx, "move_members"):
+        await ctx.send("you need move members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        try:
+            await member.move_to(channel)
+            count += 1
+        except:
+            pass
+    await ctx.send(f"moved {count} members to {channel.name}")
+
+@bot.command()
+async def disconnectall(ctx):
+    if not has_perm(ctx, "move_members"):
+        await ctx.send("you need move members perms")
+        return
+    if not ctx.author.voice:
+        await ctx.send("you're not in a voice channel")
+        return
+    count = 0
+    for member in ctx.author.voice.channel.members:
+        if member != ctx.author:
+            try:
+                await member.move_to(None)
+                count += 1
+            except:
+                pass
+    await ctx.send(f"disconnected {count} members")
+
+@bot.command()
+async def voicekick(ctx, member: discord.Member):
+    if not has_perm(ctx, "move_members"):
+        await ctx.send("you need move members perms")
+        return
+    if not member.voice:
+        await ctx.send(f"{member.mention} is not in voice")
+        return
+    await member.move_to(None)
+    await ctx.send(f"voice kicked {member.mention}")
+
+@bot.command()
+async def tempmute(ctx, member: discord.Member, minutes: int, *, reason: str = "no reason"):
+    if not has_perm(ctx, "mute_members"):
+        await ctx.send("you need mute members perms")
+        return
+    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
+    if not muted_role:
+        muted_role = await ctx.guild.create_role(name="Muted")
+        for channel in ctx.guild.channels:
+            await channel.set_permissions(muted_role, send_messages=False, speak=False)
+    await member.add_roles(muted_role, reason=reason)
+    await ctx.send(f"tempmuted {member.mention} for {minutes} minutes. reason: {reason}")
+    await asyncio.sleep(minutes * 60)
+    if muted_role in member.roles:
+        await member.remove_roles(muted_role)
+        await ctx.send(f"{member.mention} has been unmuted")
+
+@bot.command()
+async def tempban(ctx, member: discord.Member, days: int, *, reason: str = "no reason"):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    await member.ban(reason=reason)
+    await ctx.send(f"tempbanned {member.mention} for {days} days. reason: {reason}")
+    await asyncio.sleep(days * 86400)
+    await ctx.guild.unban(member)
+    await ctx.send(f"{member.mention} has been unbanned")
+
+@bot.command()
+async def softban(ctx, member: discord.Member, *, reason: str = "no reason"):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    await member.ban(reason=reason)
+    await ctx.guild.unban(member)
+    await ctx.send(f"softbanned {member.mention}. their messages are deleted but they can rejoin. reason: {reason}")
+
+@bot.command()
+async def hardban(ctx, member: discord.Member, *, reason: str = "no reason"):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    await member.ban(reason=reason, delete_message_days=7)
+    await ctx.send(f"hardbanned {member.mention}. deleted 7 days of messages. reason: {reason}")
+
+@bot.command()
+async def hackban(ctx, user_id: int, *, reason: str = "no reason"):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    user = await bot.fetch_user(user_id)
+    await ctx.guild.ban(user, reason=reason)
+    await ctx.send(f"hackbanned {user.mention}. they weren't even in the server. evil.")
+
+@bot.command()
+async def unbanid(ctx, user_id: int):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    user = await bot.fetch_user(user_id)
+    await ctx.guild.unban(user)
+    await ctx.send(f"unbanned {user.mention}")
+
+@bot.command()
+async def banlist(ctx):
+    if not has_perm(ctx, "ban_members"):
+        await ctx.send("you need ban members perms")
+        return
+    bans = [entry async for entry in ctx.guild.bans()]
+    if not bans:
+        await ctx.send("no banned users")
+        return
+    embed = discord.Embed(title="banned users", color=0xff4500)
+    for ban in bans[:25]:
+        embed.add_field(name=ban.user.name, value=f"id: {ban.user.id} | reason: {ban.reason or 'none'}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def addrole(ctx, member: discord.Member, *, role_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await member.add_roles(role)
+    await ctx.send(f"gave {role.name} to {member.mention}")
+
+@bot.command()
+async def removerole(ctx, member: discord.Member, *, role_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await member.remove_roles(role)
+    await ctx.send(f"removed {role.name} from {member.mention}")
+
+@bot.command()
+async def createtext(ctx, *, name: str):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = await ctx.guild.create_text_channel(name)
+    await ctx.send(f"created {channel.mention}")
+
+@bot.command()
+async def createvoice(ctx, *, name: str):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = await ctx.guild.create_voice_channel(name)
+    await ctx.send(f"created {channel.mention}")
+
+@bot.command()
+async def createcategory(ctx, *, name: str):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    category = await ctx.guild.create_category(name)
+    await ctx.send(f"created category {category.name}")
+
+@bot.command()
+async def deletecategory(ctx, *, name: str):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    category = discord.utils.get(ctx.guild.categories, name=name)
+    if not category:
+        await ctx.send("category not found")
+        return
+    await category.delete()
+    await ctx.send(f"deleted category {name}")
+
+@bot.command()
+async def renamechannel(ctx, channel: discord.TextChannel, *, new_name: str):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    old = channel.name
+    await channel.edit(name=new_name)
+    await ctx.send(f"renamed #{old} to #{new_name}")
+
+@bot.command()
+async def nsfw(ctx, channel: discord.TextChannel = None):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = channel or ctx.channel
+    await channel.edit(nsfw=not channel.is_nsfw())
+    status = "enabled" if channel.is_nsfw() else "disabled"
+    await ctx.send(f"nsfw {status} for {channel.mention}")
+
+@bot.command()
+async def topic(ctx, channel: discord.TextChannel = None, *, new_topic: str = None):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = channel or ctx.channel
+    if not new_topic:
+        await ctx.send(f"current topic: {channel.topic or 'none'}")
+        return
+    await channel.edit(topic=new_topic)
+    await ctx.send(f"set topic for {channel.mention}")
+
+@bot.command()
+async def sync(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.tree.sync()
+    await ctx.send("commands synced")
+
+@bot.command()
+async def clearsync(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    bot.tree.clear_commands(guild=ctx.guild)
+    await bot.tree.sync(guild=ctx.guild)
+    await ctx.send("commands cleared and synced")
+
+@bot.command()
+async def guildsync(ctx):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    await bot.tree.sync(guild=ctx.guild)
+    await ctx.send("guild commands synced")
+
+@bot.command()
+async def copyserver(ctx, guild_id: int):
+    if not is_owner(ctx):
+        await ctx.send("owner only command")
+        return
+    source = bot.get_guild(guild_id)
+    if not source:
+        await ctx.send("guild not found")
+        return
+    for channel in source.channels:
+        try:
+            if isinstance(channel, discord.TextChannel):
+                await ctx.guild.create_text_channel(channel.name, category=channel.category)
+            elif isinstance(channel, discord.VoiceChannel):
+                await ctx.guild.create_voice_channel(channel.name, category=channel.category)
+        except:
+            pass
+    await ctx.send(f"copied channels from {source.name}")
+
+@bot.command()
+async def clonechannel(ctx, channel: discord.TextChannel):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    new = await channel.clone()
+    await ctx.send(f"cloned {channel.mention} to {new.mention}")
+
+@bot.command()
+async def archive(ctx, channel: discord.TextChannel = None):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = channel or ctx.channel
+    await channel.edit(name=f"archived-{channel.name}")
+    await ctx.send(f"archived {channel.mention}")
+
+@bot.command()
+async def pin(ctx, message_id: int):
+    if not has_perm(ctx, "manage_messages"):
+        await ctx.send("you need manage messages perms")
+        return
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.pin()
+        await ctx.send("message pinned")
+    except:
+        await ctx.send("couldn't pin that message")
+
+@bot.command()
+async def unpin(ctx, message_id: int):
+    if not has_perm(ctx, "manage_messages"):
+        await ctx.send("you need manage messages perms")
+        return
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.unpin()
+        await ctx.send("message unpinned")
+    except:
+        await ctx.send("couldn't unpin that message")
+
+@bot.command()
+async def pins(ctx):
+    pins = await ctx.channel.pins()
+    if not pins:
+        await ctx.send("no pinned messages")
+        return
+    embed = discord.Embed(title="pinned messages", color=0xff4500)
+    for pin in pins[:10]:
+        embed.add_field(name=f"by {pin.author.name}", value=pin.content[:100] or "[no text]", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def react(ctx, message_id: int, emoji: str):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.add_reaction(emoji)
+        await ctx.send("reacted")
+    except:
+        await ctx.send("couldn't react to that message")
+
+@bot.command()
+async def unreact(ctx, message_id: int, emoji: str):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.remove_reaction(emoji, bot.user)
+        await ctx.send("removed reaction")
+    except:
+        await ctx.send("couldn't remove reaction")
+
+@bot.command()
+async def clearreacts(ctx, message_id: int):
+    if not has_perm(ctx, "manage_messages"):
+        await ctx.send("you need manage messages perms")
+        return
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.clear_reactions()
+        await ctx.send("cleared all reactions")
+    except:
+        await ctx.send("couldn't clear reactions")
+
+@bot.command()
+async def reactall(ctx, message_id: int):
+    emojis = ["fire", "water", "earth", "wind", "heart", "star", "moon", "sun"]
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        for emoji in emojis:
+            await msg.add_reaction(emoji)
+        await ctx.send("added reactions")
+    except:
+        await ctx.send("couldn't react")
+
+# ========== MORE COMMANDS (batch 9) ==========
+
+@bot.command()
+async def typingstart(ctx):
+    await ctx.channel.trigger_typing()
+    await ctx.send("started typing...")
+
+@bot.command()
+async def typingstop(ctx):
+    await ctx.send("stopped typing")
+
+@bot.command()
+async def typingduration(ctx, seconds: int):
+    await ctx.channel.trigger_typing()
+    await asyncio.sleep(seconds)
+    await ctx.send(f"typed for {seconds} seconds")
+
+@bot.command()
+async def messagecount(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    count = 0
+    async for msg in ctx.channel.history(limit=1000):
+        if msg.author.id == member.id:
+            count += 1
+    await ctx.send(f"{member.mention} sent {count} messages in the last 1000")
+
+@bot.command()
+async def firstmessage(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    async for msg in ctx.channel.history(limit=10000):
+        if msg.author.id == member.id:
+            embed = discord.Embed(description=msg.content, color=0xff4500)
+            embed.set_author(name=msg.author.name)
+            embed.set_footer(text=f"sent {msg.created_at.strftime('%Y-%m-%d')}")
+            await ctx.send(embed=embed)
+            return
+    await ctx.send("no messages found from that user")
+
+@bot.command()
+async def lastmessage(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    async for msg in ctx.channel.history(limit=100):
+        if msg.author.id == member.id:
+            embed = discord.Embed(description=msg.content, color=0xff4500)
+            embed.set_author(name=msg.author.name)
+            await ctx.send(embed=embed)
+            return
+    await ctx.send("no recent messages from that user")
+
+@bot.command()
+async def messageinfo(ctx, message_id: int):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        embed = discord.Embed(title="message info", color=0xff4500)
+        embed.add_field(name="author", value=msg.author.mention)
+        embed.add_field(name="content", value=msg.content[:1000] or "[no text]")
+        embed.add_field(name="created", value=msg.created_at.strftime("%Y-%m-%d %H:%M:%S"))
+        embed.add_field(name="edited", value=msg.edited_at.strftime("%Y-%m-%d %H:%M:%S") if msg.edited_at else "never")
+        embed.add_field(name="reactions", value=len(msg.reactions))
+        embed.add_field(name="attachments", value=len(msg.attachments))
+        await ctx.send(embed=embed)
+    except:
+        await ctx.send("message not found")
+
+@bot.command()
+async def quote(ctx, message_id: int):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        embed = discord.Embed(description=msg.content, color=0xff4500)
+        embed.set_author(name=msg.author.name, icon_url=msg.author.display_avatar.url)
+        embed.set_footer(text=f"#{msg.channel.name}")
+        await ctx.send(embed=embed)
+    except:
+        await ctx.send("message not found")
+
+@bot.command()
+async def steal(ctx, message_id: int):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        if msg.attachments:
+            for att in msg.attachments:
+                await ctx.send(att.url)
+        elif msg.embeds:
+            for emb in msg.embeds:
+                await ctx.send(embed=emb)
+        else:
+            await ctx.send("no attachments or embeds to steal")
+    except:
+        await ctx.send("message not found")
+
+@bot.command()
+async def reactcount(ctx, message_id: int):
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        if not msg.reactions:
+            await ctx.send("no reactions on that message")
+            return
+        embed = discord.Embed(title="reaction counts", color=0xff4500)
+        for reaction in msg.reactions:
+            embed.add_field(name=str(reaction.emoji), value=f"{reaction.count} reactions", inline=False)
+        await ctx.send(embed=embed)
+    except:
+        await ctx.send("message not found")
+
+@bot.command()
+async def mostreacted(ctx):
+    most = None
+    most_count = 0
+    async for msg in ctx.channel.history(limit=100):
+        total = sum(r.count for r in msg.reactions)
+        if total > most_count:
+            most = msg
+            most_count = total
+    if most:
+        embed = discord.Embed(description=most.content, color=0xff4500)
+        embed.set_author(name=most.author.name)
+        embed.set_footer(text=f"{most_count} total reactions")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("no reacted messages found")
+
+@bot.command()
+async def oldestmember(ctx):
+    oldest = min(ctx.guild.members, key=lambda m: m.joined_at or datetime.datetime.now())
+    await ctx.send(f"oldest member: {oldest.mention} joined {oldest.joined_at.strftime('%Y-%m-%d') if oldest.joined_at else 'unknown'}")
+
+@bot.command()
+async def newestmember(ctx):
+    newest = max(ctx.guild.members, key=lambda m: m.joined_at or datetime.datetime.min)
+    await ctx.send(f"newest member: {newest.mention} joined {newest.joined_at.strftime('%Y-%m-%d') if newest.joined_at else 'unknown'}")
+
+@bot.command()
+async def membercount(ctx):
+    await ctx.send(f"this server has {ctx.guild.member_count} members")
+
+@bot.command()
+async def botcount(ctx):
+    bots = sum(1 for m in ctx.guild.members if m.bot)
+    await ctx.send(f"this server has {bots} bots")
+
+@bot.command()
+async def humancount(ctx):
+    humans = sum(1 for m in ctx.guild.members if not m.bot)
+    await ctx.send(f"this server has {humans} humans")
+
+@bot.command()
+async def onlinecount(ctx):
+    online = sum(1 for m in ctx.guild.members if m.status != discord.Status.offline)
+    await ctx.send(f"{online} members are online")
+
+@bot.command()
+async def offlinecount(ctx):
+    offline = sum(1 for m in ctx.guild.members if m.status == discord.Status.offline)
+    await ctx.send(f"{offline} members are offline")
+
+@bot.command()
+async def boosting(ctx):
+    boosters = [m for m in ctx.guild.members if m.premium_since]
+    if not boosters:
+        await ctx.send("no boosters. sad.")
+        return
+    embed = discord.Embed(title="server boosters", color=0xff4500)
+    for booster in boosters[:10]:
+        embed.add_field(name=booster.name, value=f"boosting since {booster.premium_since.strftime('%Y-%m-%d')}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def boostlevel(ctx):
+    await ctx.send(f"server boost level: {ctx.guild.premium_tier} | boosts: {ctx.guild.premium_subscription_count}")
+
+@bot.command()
+async def vanityurl(ctx):
+    if ctx.guild.vanity_url:
+        await ctx.send(f"vanity url: {ctx.guild.vanity_url}")
+    else:
+        await ctx.send("no vanity url set")
+
+@bot.command()
+async def discovery(ctx):
+    await ctx.send(f"discovery splash: {ctx.guild.discovery_splash.url if ctx.guild.discovery_splash else 'none'}")
+
+@bot.command()
+async def banner(ctx):
+    if ctx.guild.banner:
+        embed = discord.Embed(title="server banner")
+        embed.set_image(url=ctx.guild.banner.url)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("no server banner")
+
+@bot.command()
+async def icon(ctx):
+    if ctx.guild.icon:
+        embed = discord.Embed(title="server icon")
+        embed.set_image(url=ctx.guild.icon.url)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("no server icon")
+
+@bot.command()
+async def splash(ctx):
+    if ctx.guild.splash:
+        embed = discord.Embed(title="invite splash")
+        embed.set_image(url=ctx.guild.splash.url)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("no invite splash")
+
+@bot.command()
+async def afkchannel(ctx):
+    if ctx.guild.afk_channel:
+        await ctx.send(f"afk channel: {ctx.guild.afk_channel.mention}")
+    else:
+        await ctx.send("no afk channel set")
+
+@bot.command()
+async def afktimeout(ctx):
+    await ctx.send(f"afk timeout: {ctx.guild.afk_timeout} seconds")
+
+@bot.command()
+async def verificationlevel(ctx):
+    levels = ["none", "low", "medium", "high", "very high"]
+    await ctx.send(f"verification level: {levels[ctx.guild.verification_level.value]}")
+
+@bot.command()
+async def defaultnotifications(ctx):
+    await ctx.send(f"default notifications: {ctx.guild.default_notifications.name}")
+
+@bot.command()
+async def explicitcontent(ctx):
+    await ctx.send(f"explicit content filter: {ctx.guild.explicit_content_filter.name}")
+
+@bot.command()
+async def mfa(ctx):
+    await ctx.send(f"mfa level: {ctx.guild.mfa_level.name}")
+
+@bot.command()
+async def ownerinfo(ctx):
+    owner = ctx.guild.owner
+    if owner:
+        embed = discord.Embed(title="server owner info", color=0xff4500)
+        embed.add_field(name="name", value=owner.name)
+        embed.add_field(name="id", value=owner.id)
+        embed.set_thumbnail(url=owner.display_avatar.url)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("owner not found")
+
+@bot.command()
+async def createdate(ctx):
+    await ctx.send(f"server created: {ctx.guild.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+@bot.command()
+async def region(ctx):
+    await ctx.send(f"server region: {ctx.guild.preferred_locale}")
+
+@bot.command()
+async def features(ctx):
+    features = ", ".join(ctx.guild.features) if ctx.guild.features else "none"
+    await ctx.send(f"server features: {features}")
+
+@bot.command()
+async def maxmembers(ctx):
+    await ctx.send(f"max members: {ctx.guild.max_members or 'unlimited'}")
+
+@bot.command()
+async def maxpresences(ctx):
+    await ctx.send(f"max presences: {ctx.guild.max_presences or 'unlimited'}")
+
+@bot.command()
+async def maxvideousers(ctx):
+    await ctx.send(f"max video channel users: {ctx.guild.max_video_channel_users or 'unlimited'}")
+
+@bot.command()
+async def widget(ctx):
+    if ctx.guild.widget_enabled:
+        await ctx.send(f"widget enabled: {ctx.guild.widget_enabled} | channel: {ctx.guild.widget_channel.mention if ctx.guild.widget_channel else 'none'}")
+    else:
+        await ctx.send("widget disabled")
+
+@bot.command()
+async def systemchannel(ctx):
+    if ctx.guild.system_channel:
+        await ctx.send(f"system channel: {ctx.guild.system_channel.mention}")
+    else:
+        await ctx.send("no system channel")
+
+@bot.command()
+async def ruleschannel(ctx):
+    if ctx.guild.rules_channel:
+        await ctx.send(f"rules channel: {ctx.guild.rules_channel.mention}")
+    else:
+        await ctx.send("no rules channel")
+
+@bot.command()
+async def updateschannel(ctx):
+    if ctx.guild.public_updates_channel:
+        await ctx.send(f"updates channel: {ctx.guild.public_updates_channel.mention}")
+    else:
+        await ctx.send("no updates channel")
+
+# ========== MORE COMMANDS (batch 10) ==========
+
+@bot.command()
+async def rolecolor(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} color: {role.color}")
+
+@bot.command()
+async def rolemembers(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    members = ", ".join(m.mention for m in role.members[:20])
+    await ctx.send(f"{role.name} members: {members if members else 'none'}")
+
+@bot.command()
+async def roleposition(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} position: {role.position}")
+
+@bot.command()
+async def rolecreated(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} created: {role.created_at.strftime('%Y-%m-%d')}")
+
+@bot.command()
+async def rolepermissions(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    perms = [p for p, v in role.permissions if v]
+    await ctx.send(f"{role.name} permissions: {', '.join(perms) if perms else 'none'}")
+
+@bot.command()
+async def roleicon(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    if role.icon:
+        embed = discord.Embed(title=f"{role.name} icon")
+        embed.set_image(url=role.icon.url)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("no role icon")
+
+@bot.command()
+async def roleunicode(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    if role.unicode_emoji:
+        await ctx.send(f"{role.name} unicode emoji: {role.unicode_emoji}")
+    else:
+        await ctx.send("no unicode emoji")
+
+@bot.command()
+async def rolemanaged(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} managed: {role.managed}")
+
+@bot.command()
+async def rolementionable(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} mentionable: {role.mentionable}")
+
+@bot.command()
+async def rolehoist(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} hoisted: {role.hoist}")
+
+@bot.command()
+async def roleid(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} id: {role.id}")
+
+@bot.command()
+async def rolecount(ctx):
+    await ctx.send(f"this server has {len(ctx.guild.roles)} roles")
+
+@bot.command()
+async def rolelist(ctx):
+    roles = ", ".join(r.name for r in sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True) if r.name != "@everyone")
+    await ctx.send(f"roles: {roles}")
+
+@bot.command()
+async def memberroles(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    roles = ", ".join(r.name for r in member.roles if r.name != "@everyone")
+    await ctx.send(f"{member.mention} roles: {roles if roles else 'none'}")
+
+@bot.command()
+async def toprole(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    await ctx.send(f"{member.mention} top role: {member.top_role.name}")
+
+@bot.command()
+async def rolecolorhex(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} hex color: {str(role.color)}")
+
+@bot.command()
+async def rolecolorrgb(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    r, g, b = role.color.to_rgb()
+    await ctx.send(f"{role.name} rgb: ({r}, {g}, {b})")
+
+@bot.command()
+async def rolecolortag(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    await ctx.send(f"{role.name} color: {role.color}")
+
+@bot.command()
+async def changerolecolor(ctx, *, role_name: str, hex_color: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    try:
+        color = discord.Color(int(hex_color.replace("#", ""), 16))
+        await role.edit(color=color)
+        await ctx.send(f"changed {role.name} color to {hex_color}")
+    except:
+        await ctx.send("invalid hex color")
+
+@bot.command()
+async def changerolename(ctx, role: discord.Role, *, new_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    old = role.name
+    await role.edit(name=new_name)
+    await ctx.send(f"renamed {old} to {new_name}")
+
+@bot.command()
+async def massrole(ctx, *, role_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    count = 0
+    for member in ctx.guild.members:
+        if role not in member.roles and not member.bot:
+            try:
+                await member.add_roles(role)
+                count += 1
+            except:
+                pass
+    await ctx.send(f"gave {role.name} to {count} members")
+
+@bot.command()
+async def massremoverole(ctx, *, role_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    count = 0
+    for member in ctx.guild.members:
+        if role in member.roles:
+            try:
+                await member.remove_roles(role)
+                count += 1
+            except:
+                pass
+    await ctx.send(f"removed {role.name} from {count} members")
+
+@bot.command()
+async def inrole(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    members = [m.mention for m in role.members]
+    if not members:
+        await ctx.send("no members have that role")
+        return
+    embed = discord.Embed(title=f"members with {role.name}", color=0xff4500)
+    for i in range(0, len(members), 25):
+        embed.add_field(name=f"page {i//25 + 1}", value=", ".join(members[i:i+25]), inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def notinrole(ctx, *, role_name: str):
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    members = [m.mention for m in ctx.guild.members if role not in m.roles and not m.bot]
+    if not members:
+        await ctx.send("everyone has that role")
+        return
+    await ctx.send(f"members without {role.name}: {len(members)} people")
+
+@bot.command()
+async def rolecompare(ctx, role1_name: str, role2_name: str):
+    role1 = discord.utils.get(ctx.guild.roles, name=role1_name)
+    role2 = discord.utils.get(ctx.guild.roles, name=role2_name)
+    if not role1 or not role2:
+        await ctx.send("one or both roles not found")
+        return
+    if role1.position > role2.position:
+        await ctx.send(f"{role1.name} is higher than {role2.name}")
+    elif role2.position > role1.position:
+        await ctx.send(f"{role2.name} is higher than {role1.name}")
+    else:
+        await ctx.send(f"{role1.name} and {role2.name} are at the same position")
+
+@bot.command()
+async def rolehierarchy(ctx):
+    roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
+    embed = discord.Embed(title="role hierarchy", color=0xff4500)
+    for i, role in enumerate(roles[:25]):
+        if role.name != "@everyone":
+            embed.add_field(name=f"#{i+1} {role.name}", value=f"position: {role.position}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def createrolemenu(ctx, *, role_names: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    roles = role_names.split(",")
+    embed = discord.Embed(title="react for roles", color=0xff4500)
+    reactions = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    for i, role_name in enumerate(roles[:10]):
+        role = discord.utils.get(ctx.guild.roles, name=role_name.strip())
+        if role:
+            embed.add_field(name=f"{reactions[i]} {role.name}", value="react to get this role", inline=False)
+    msg = await ctx.send(embed=embed)
+    for i in range(len(roles[:10])):
+        await msg.add_reaction(reactions[i])
+
+@bot.command()
+async def sticky(ctx, *, message: str):
+    if not has_perm(ctx, "manage_messages"):
+        await ctx.send("you need manage messages perms")
+        return
+    if not hasattr(bot, "sticky_messages"):
+        bot.sticky_messages = {}
+    bot.sticky_messages[ctx.channel.id] = message
+    await ctx.send("sticky message set")
+
+@bot.event
+async def on_message_sticky(message):
+    if message.author.bot:
+        return
+    if hasattr(bot, "sticky_messages") and message.channel.id in bot.sticky_messages:
+        await message.channel.send(bot.sticky_messages[message.channel.id])
+
+@bot.command()
+async def unsticky(ctx):
+    if not has_perm(ctx, "manage_messages"):
+        await ctx.send("you need manage messages perms")
+        return
+    if hasattr(bot, "sticky_messages") and ctx.channel.id in bot.sticky_messages:
+        del bot.sticky_messages[ctx.channel.id]
+        await ctx.send("sticky message removed")
+    else:
+        await ctx.send("no sticky message in this channel")
+
+@bot.command()
+async def reactrole(ctx, message_id: int, emoji: str, *, role_name: str):
+    if not has_perm(ctx, "manage_roles"):
+        await ctx.send("you need manage roles perms")
+        return
+    role = discord.utils.get(ctx.guild.roles, name=role_name)
+    if not role:
+        await ctx.send("role not found")
+        return
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        await msg.add_reaction(emoji)
+        if not hasattr(bot, "react_roles"):
+            bot.react_roles = {}
+        bot.react_roles[(msg.id, emoji)] = role.id
+        await ctx.send(f"set {emoji} to give {role.name}")
+    except:
+        await ctx.send("message not found")
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    if payload.user_id == bot.user.id:
+        return
+    if hasattr(bot, "react_roles"):
+        role_id = bot.react_roles.get((payload.message_id, str(payload.emoji)))
+        if role_id:
+            guild = bot.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            role = guild.get_role(role_id)
+            if member and role:
+                await member.add_roles(role)
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    if hasattr(bot, "react_roles"):
+        role_id = bot.react_roles.get((payload.message_id, str(payload.emoji)))
+        if role_id:
+            guild = bot.get_guild(payload.guild_id)
+            member = guild.get_member(payload.user_id)
+            role = guild.get_role(role_id)
+            if member and role:
+                await member.remove_roles(role)
+
+@bot.command()
+async def ticket(ctx, *, reason: str = "no reason"):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    overwrites = {
+        ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        ctx.author: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    }
+    for role in ctx.guild.roles:
+        if role.permissions.manage_channels:
+            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    channel = await ctx.guild.create_text_channel(f"ticket-{ctx.author.name}", overwrites=overwrites)
+    await channel.send(f"ticket created by {ctx.author.mention}. reason: {reason}")
+    await ctx.send(f"ticket created: {channel.mention}")
+
+@bot.command()
+async def closeticket(ctx, channel: discord.TextChannel = None):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    channel = channel or ctx.channel
+    if channel.name.startswith("ticket-"):
+        await channel.delete()
+        await ctx.send("ticket closed")
+    else:
+        await ctx.send("this isn't a ticket channel")
+
+@bot.command()
+async def transcript(ctx, channel: discord.TextChannel = None):
+    channel = channel or ctx.channel
+    messages = []
+    async for msg in channel.history(limit=100, oldest_first=True):
+        messages.append(f"[{msg.created_at.strftime('%H:%M')}] {msg.author.name}: {msg.content}")
+    transcript = "\n".join(messages)
+    await ctx.send(f"transcript of {channel.name}:
+```{transcript[:1900]}```")
+
+@bot.command()
+async def lockdown(ctx):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    for channel in ctx.guild.text_channels:
+        await channel.set_permissions(ctx.guild.default_role, send_messages=False)
+    await ctx.send("server lockdown initiated. all channels locked.")
+
+@bot.command()
+async def unlockdown(ctx):
+    if not has_perm(ctx, "manage_channels"):
+        await ctx.send("you need manage channels perms")
+        return
+    for channel in ctx.guild.text_channels:
+        await channel.set_permissions(ctx.guild.default_role, send_messages=True)
+    await ctx.send("server unlocked. all channels open.")
+
+@bot.command()
+async def raidmode(ctx):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    bot.server_data[str(ctx.guild.id)]["raid_mode"] = True
+    save()
+    await ctx.send("raid mode enabled. new members will be auto-muted.")
+
+@bot.command()
+async def unraidmode(ctx):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    bot.server_data[str(ctx.guild.id)]["raid_mode"] = False
+    save()
+    await ctx.send("raid mode disabled.")
+
+@bot.event
+async def on_member_join_raid(member):
+    guild_id = str(member.guild.id)
+    if guild_id in bot.server_data and bot.server_data[guild_id].get("raid_mode"):
+        muted_role = discord.utils.get(member.guild.roles, name="Muted")
+        if muted_role:
+            await member.add_roles(muted_role)
+
+@bot.command()
+async def antiraid(ctx, threshold: int = 10):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    bot.server_data[str(ctx.guild.id)]["antiraid_threshold"] = threshold
+    save()
+    await ctx.send(f"antiraid set to {threshold} joins per minute")
+
+@bot.command()
+async def whitelist(ctx, member: discord.Member):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    if "whitelist" not in bot.server_data[str(ctx.guild.id)]:
+        bot.server_data[str(ctx.guild.id)]["whitelist"] = []
+    bot.server_data[str(ctx.guild.id)]["whitelist"].append(member.id)
+    save()
+    await ctx.send(f"whitelisted {member.mention}")
+
+@bot.command()
+async def unwhitelist(ctx, member: discord.Member):
+    if not has_perm(ctx, "manage_guild"):
+        await ctx.send("you need manage guild perms")
+        return
+    if "whitelist" in bot.server_data[str(ctx.guild.id)]:
+        if member.id in bot.server_data[str(ctx.guild.id)]["whitelist"]:
+            bot.server_data[str(ctx.guild.id)]["whitelist"].remove(member.id)
+            save()
+    await ctx.send(f"unwhitelisted {member.mention}")
+
+# ========== HELP COMMAND (PAGINATED) ==========
+
+PAGE1_COMMANDS = [
+    "economy:", "embers, daily, streak, beg, scam, invest, heist, loan, repay, burn, send",
+    "creatures:", "summon, cage, release, feed, neglect, mood, evolve, breed, sacrifice, rename",
+    "combat:", "duel, raid, ambush, defend, berserk, bribe, flee, taunt, combo, revive, wager, rank",
+    "gambling:", "dice, shells, flip, spin, surge, vault, pick, chase, chamber, rig",
+    "social:", "marry, divorce, will, cult, betray, tribute, roast, confess",
+    "utility:", "tutorial, stats, server, global_rank, settings, cooldowns, changelog",
+    "weird:", "dream, curse, bless, time, weather, oracle, mimic, glitch, lore, quit"
+]
+
+PAGE2_COMMANDS = [
+    "moderation:", "kick, ban, unban, purge, warn, warns, clearwarns, nick, role, createrole, deleterole",
+    "", "slowmode, lock, unlock, hide, unhide, mute, unmute, createchannel, deletechannel, webhook",
+    "", "announce, say, embedsay, setprefix, autorole, welcome, goodbye, welcomechannel",
+    "fun:", "ping, coinflip, roll, choose, rate, gayrate, simprate, iq, pp, height, weight, age",
+    "", "ship, hack, meme, joke, fact, quote, rps, eightball, reverse, uppercase, lowercase",
+    "", "len, countwords, avatar, userinfo, botinfo, invite, uptime, reminder, timer, poll, calc",
+    "", "randomnum, password, binary, morse, base64, decode64, hexcode, decodehex, md5, sha256"
+]
+
+PAGE3_COMMANDS = [
+    "advanced economy:", "bankrob, lottery, slots, blackjack, roulette, horse, doubleornothing, highlow",
+    "", "mine, fish, chop, farm, hunt, forage, craft, explore, dungeon, boss, quest, work, pay",
+    "", "deposit, withdraw, balance, leaderboard, shop, buy, inventory, use, sell",
+    "creature management:", "pet, play, train, heal, releaseall, sacrificeall, creatureinfo, strongest, weakest",
+    "", "happiest, saddest, creaturecount, totalpower, totalmood, sortpower, sortmood, sorttype",
+    "", "dupecheck, releaseweak, releasesad, massfeed, masstrain, massevolve, creatureleaderboard",
+    "", "tradeall, clone, merge, releasefav, favoritelist, unfavoriteall, creaturesearch",
+    "server info:", "guilds, channels, roleslist, emojislist, stickerslist, banslist, invites, permissions",
+    "", "channelinfo, roleinfo, voiceinfo, move, deafen, undeafen, mutevoice, unmutevoice, disconnect",
+    "", "deafenall, muteall, undeafenall, unmuteall, moveall, disconnectall, voicekick",
+    "admin:", "give, set, remove, wipe, backup, restore, evalcmd, execmd, shutdown, restart, status",
+    "", "playing, watching, listening, streaming, setavatar, setname, serverlist, leavserver, nickall",
+    "", "unbanall, copyserver, sync, clearsync, guildsync, massdm, announceall"
+]
+
+@bot.command()
+async def help(ctx, page: int = 1):
+    if page == 1:
+        embed = discord.Embed(title="flame bot commands - page 1/3", description="core commands from the screenshot + basic fun", color=0xff4500)
+        for line in PAGE1_COMMANDS:
+            if line.endswith(":"):
+                embed.add_field(name=line, value="", inline=False)
+            elif line:
+                embed.add_field(name="", value=line, inline=False)
+        embed.set_footer(text="use f help 2 for page 2, f help 3 for page 3")
+    elif page == 2:
+        embed = discord.Embed(title="flame bot commands - page 2/3", description="moderation + fun commands", color=0xff4500)
+        for line in PAGE2_COMMANDS:
+            if line.endswith(":"):
+                embed.add_field(name=line, value="", inline=False)
+            elif line:
+                embed.add_field(name="", value=line, inline=False)
+        embed.set_footer(text="use f help 1 for page 1, f help 3 for page 3")
+    elif page == 3:
+        embed = discord.Embed(title="flame bot commands - page 3/3", description="advanced + admin commands", color=0xff4500)
+        for line in PAGE3_COMMANDS:
+            if line.endswith(":"):
+                embed.add_field(name=line, value="", inline=False)
+            elif line:
+                embed.add_field(name="", value=line, inline=False)
+        embed.set_footer(text="use f help 1 for page 1, f help 2 for page 2")
+    else:
+        await ctx.send("only pages 1, 2, and 3 exist. pick one of those.")
+        return
+    await ctx.send(embed=embed)
+
+# ========== RUN THE BOT ==========
+
+token = os.environ.get("DISCORD_TOKEN")
+if not token:
+    print("error: no discord_token environment variable found")
+    print("make sure to set discord_token in your railway environment variables")
+else:
+    bot.run(token)
