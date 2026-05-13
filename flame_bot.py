@@ -69,7 +69,7 @@ def is_owner():
     async def predicate(ctx):
         if ctx.author.id != OWNER_ID:
             embed = discord.Embed(
-                title="❌ Nah fam",
+                title="Nah fam",
                 description="You can't use this command as ur not the bot owner.",
                 color=discord.Color.red()
             )
@@ -83,11 +83,11 @@ def is_owner():
 
 @bot.event
 async def on_ready():
-    print(f"🔥 {bot.user.name} is online and blazing!")
+    print(f"{bot.user.name} is online and blazing!")
     print(f"Bot ID: {bot.user.id}")
     print(f"Prefix: {PREFIX}")
     print("Ready to burn some embers!")
-    await bot.change_presence(activity=discord.Game(name="fhelp | burning embers 🔥"))
+    await bot.change_presence(activity=discord.Game(name="fhelp | burning embers"))
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -105,13 +105,13 @@ async def on_command_error(ctx, error):
 @bot.command(name="help", aliases=["h"])
 async def help_command(ctx):
     embed = discord.Embed(
-        title="🔥 Flame Bot Commands",
+        title="Flame Bot Commands",
         description="yo heres everything i can do",
         color=discord.Color.orange()
     )
 
     embed.add_field(
-        name="💰 Economy",
+        name="Economy",
         value="""
         `fbalance` / `fbal` - check your embers
         `fdaily` - collect daily embers (24h cooldown)
@@ -127,7 +127,7 @@ async def help_command(ctx):
     )
 
     embed.add_field(
-        name="🎮 Fun",
+        name="Fun",
         value="""
         `f8ball <question>` - ask the magic 8ball
         `froll <number>` - roll a dice
@@ -141,7 +141,7 @@ async def help_command(ctx):
     )
 
     embed.add_field(
-        name="👤 User",
+        name="User",
         value="""
         `fprofile` / `fp` - your profile card
         `favatar @user` - get someones pfp
@@ -154,7 +154,7 @@ async def help_command(ctx):
     )
 
     embed.add_field(
-        name="🔧 Admin (Owner Only)",
+        name="Admin (Owner Only)",
         value="""
         `fgive <amount> @user` - give embers to someone
         `fset <amount> @user` - set someones embers
@@ -164,7 +164,7 @@ async def help_command(ctx):
         inline=False
     )
 
-    embed.set_footer(text="prefix is f btw | made by justaflamewithfragz 🔥")
+    embed.set_footer(text="prefix is f btw | made by justaflamewithfragz")
     await ctx.send(embed=embed)
 
 @bot.command(name="ping")
@@ -191,7 +191,7 @@ async def balance(ctx, user: discord.Member = None):
     embers = data["embers"]
 
     embed = discord.Embed(
-        title=f"🔥 {user.display_name}'s Embers",
+        title=f"{user.display_name}'s Embers",
         color=discord.Color.orange()
     )
     embed.add_field(name="Balance", value=f"**{embers:,}** embers", inline=False)
@@ -338,11 +338,11 @@ async def send(ctx, amount: int, recipient: discord.Member):
 
     # Confirmation message
     embed = discord.Embed(
-        title="🤔 Are You Sure?",
+        title="Are You Sure?",
         description=f"You about to send **{amount:,}** embers to {recipient.display_name}?",
         color=discord.Color.yellow()
     )
-    embed.set_footer(text="React with ✅ to confirm or ❌ to cancel")
+    embed.set_footer(text="React with checkmark to confirm or X to cancel")
 
     confirm_msg = await ctx.send(embed=embed)
     await confirm_msg.add_reaction("✅")
@@ -355,7 +355,7 @@ async def send(ctx, amount: int, recipient: discord.Member):
         reaction, user = await bot.wait_for("reaction_add", timeout=30.0, check=check)
 
         if str(reaction.emoji) == "✅":
-            sender_data = get_user_data(ctx.author.id)  # Refresh data
+            sender_data = get_user_data(ctx.author.id)
             recipient_data = get_user_data(recipient.id)
 
             if sender_data["embers"] < amount:
@@ -367,7 +367,7 @@ async def send(ctx, amount: int, recipient: discord.Member):
             update_user_data(ctx.author.id, "embers", sender_data["embers"])
             update_user_data(recipient.id, "embers", recipient_data["embers"])
 
-            await ctx.send(f"✅ sent **{amount:,}** embers to {recipient.display_name}! youre a real one")
+            await ctx.send(f"sent **{amount:,}** embers to {recipient.display_name}! youre a real one")
         else:
             await ctx.send("transaction cancelled. keep your bag fam lol")
 
@@ -377,17 +377,17 @@ async def send(ctx, amount: int, recipient: discord.Member):
 @bot.command(name="shop")
 async def shop(ctx):
     embed = discord.Embed(
-        title="🔥 Embers Shop",
+        title="Embers Shop",
         description="spend your hard earned embers here",
         color=discord.Color.orange()
     )
 
     items = [
-        ("🔥 Flame Badge", 1000, "show everyone youre a real one"),
-        ("💎 Diamond Role", 5000, "flex on everyone with this"),
-        ("👑 Crown", 10000, "king/queen of the server"),
-        ("🎰 Lottery Ticket", 500, "try your luck"),
-        ("🛡️ Shield", 2000, "protect yourself from robberies")
+        ("Flame Badge", 1000, "show everyone youre a real one"),
+        ("Diamond Role", 5000, "flex on everyone with this"),
+        ("Crown", 10000, "king/queen of the server"),
+        ("Lottery Ticket", 500, "try your luck"),
+        ("Shield", 2000, "protect yourself from robberies")
     ]
 
     for name, price, desc in items:
@@ -402,11 +402,11 @@ async def buy(ctx, *, item_name: str):
     data = get_user_data(user_id)
 
     items = {
-        "flame badge": ("🔥 Flame Badge", 1000),
-        "diamond role": ("💎 Diamond Role", 5000),
-        "crown": ("👑 Crown", 10000),
-        "lottery ticket": ("🎰 Lottery Ticket", 500),
-        "shield": ("🛡️ Shield", 2000)
+        "flame badge": ("Flame Badge", 1000),
+        "diamond role": ("Diamond Role", 5000),
+        "crown": ("Crown", 10000),
+        "lottery ticket": ("Lottery Ticket", 500),
+        "shield": ("Shield", 2000)
     }
 
     item_key = item_name.lower()
@@ -438,7 +438,7 @@ async def inventory(ctx, user: discord.Member = None):
         return
 
     embed = discord.Embed(
-        title=f"🎒 {user.display_name}'s Inventory",
+        title=f"{user.display_name}'s Inventory",
         color=discord.Color.orange()
     )
 
@@ -452,7 +452,7 @@ async def leaderboard(ctx):
     sorted_users = sorted(embers_data.items(), key=lambda x: x[1]["embers"], reverse=True)[:10]
 
     embed = discord.Embed(
-        title="🔥 Richest People",
+        title="Richest People",
         description="the ones who really got it",
         color=discord.Color.gold()
     )
@@ -460,7 +460,7 @@ async def leaderboard(ctx):
     for i, (user_id, data) in enumerate(sorted_users, 1):
         user = bot.get_user(int(user_id))
         name = user.display_name if user else f"User {user_id}"
-        medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"#{i}"
+        medal = ["1st", "2nd", "3rd"][i-1] if i <= 3 else f"#{i}"
         embed.add_field(name=f"{medal} {name}", value=f"**{data['embers']:,}** embers", inline=False)
 
     await ctx.send(embed=embed)
@@ -485,7 +485,7 @@ async def eight_ball(ctx, *, question: str):
     ]
 
     embed = discord.Embed(
-        title="🎱 Magic 8-Ball",
+        title="Magic 8-Ball",
         color=discord.Color.purple()
     )
     embed.add_field(name="Question", value=question, inline=False)
@@ -575,7 +575,7 @@ async def meme(ctx):
         "https://i.imgur.com/3G4H5I6.jpg",
         "https://i.imgur.com/7J8K9L0.jpg"
     ]
-    embed = discord.Embed(title="🔥 Random Meme", color=discord.Color.random())
+    embed = discord.Embed(title="Random Meme", color=discord.Color.random())
     embed.set_image(url=random.choice(memes))
     embed.set_footer(text="meme courtesy of the internet lol")
     await ctx.send(embed=embed)
@@ -588,7 +588,7 @@ async def profile(ctx, user: discord.Member = None):
     data = get_user_data(user.id)
 
     embed = discord.Embed(
-        title=f"🔥 {user.display_name}'s Profile",
+        title=f"{user.display_name}'s Profile",
         color=discord.Color.orange()
     )
     embed.set_thumbnail(url=user.display_avatar.url)
@@ -612,7 +612,7 @@ async def userinfo(ctx, user: discord.Member = None):
     user = user or ctx.author
 
     embed = discord.Embed(
-        title=f"👤 {user.display_name} Info",
+        title=f"{user.display_name} Info",
         color=discord.Color.blue()
     )
     embed.set_thumbnail(url=user.display_avatar.url)
@@ -630,7 +630,7 @@ async def serverinfo(ctx):
     guild = ctx.guild
 
     embed = discord.Embed(
-        title=f"🔥 {guild.name} Server Info",
+        title=f"{guild.name} Server Info",
         color=discord.Color.orange()
     )
     embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
@@ -638,7 +638,7 @@ async def serverinfo(ctx):
     embed.add_field(name="Members", value=guild.member_count, inline=True)
     embed.add_field(name="Channels", value=len(guild.channels), inline=True)
     embed.add_field(name="Roles", value=len(guild.roles), inline=True)
-    embed.add_field(name("Created", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
+    embed.add_field(name="Created", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
     embed.add_field(name="Boosts", value=guild.premium_subscription_count or 0, inline=True)
 
     await ctx.send(embed=embed)
@@ -656,7 +656,7 @@ async def give(ctx, amount: int, user: discord.Member):
     data["embers"] += amount
     update_user_data(user.id, "embers", data["embers"])
 
-    await ctx.send(f"✅ gave **{amount:,}** embers to {user.display_name}. youre too generous fam")
+    await ctx.send(f"gave **{amount:,}** embers to {user.display_name}. youre too generous fam")
 
 @bot.command(name="set")
 @is_owner()
@@ -669,7 +669,7 @@ async def set_embers(ctx, amount: int, user: discord.Member):
     data["embers"] = amount
     update_user_data(user.id, "embers", data["embers"])
 
-    await ctx.send(f"✅ set {user.display_name}'s embers to **{amount:,}**. big boss moves")
+    await ctx.send(f"set {user.display_name}'s embers to **{amount:,}**. big boss moves")
 
 @bot.command(name="remove")
 @is_owner()
@@ -682,7 +682,7 @@ async def remove(ctx, amount: int, user: discord.Member):
     data["embers"] = max(0, data["embers"] - amount)
     update_user_data(user.id, "embers", data["embers"])
 
-    await ctx.send(f"✅ removed **{amount:,}** embers from {user.display_name}. tax season lol")
+    await ctx.send(f"removed **{amount:,}** embers from {user.display_name}. tax season lol")
 
 @bot.command(name="wipe")
 @is_owner()
@@ -691,7 +691,7 @@ async def wipe(ctx, user: discord.Member):
     if user_id in embers_data:
         del embers_data[user_id]
         save_data(embers_data)
-        await ctx.send(f"✅ wiped all data for {user.display_name}. they starting from zero now lol")
+        await ctx.send(f"wiped all data for {user.display_name}. they starting from zero now lol")
     else:
         await ctx.send(f"{user.display_name} dont even have data to wipe. they never existed apparently")
 
@@ -778,8 +778,9 @@ async def slots(ctx, amount: int = 10):
         await ctx.send(f"you broke, need **{amount}** embers to play. you got **{data['embers']}**")
         return
 
-    symbols = ["🔥", "💎", "🍀", "⭐", "💰", "7️⃣"]
+    symbols = ["fire", "diamond", "clover", "star", "money", "seven"]
     result = [random.choice(symbols) for _ in range(3)]
+    result_str = " | ".join(result)
 
     data["embers"] -= amount
 
@@ -787,15 +788,18 @@ async def slots(ctx, amount: int = 10):
         winnings = amount * 10
         data["embers"] += winnings
         update_user_data(user_id, "embers", data["embers"])
-        await ctx.send(f"{' | '.join(result)}\n**JACKPOT!** You won **{winnings}** embers! youre literally rich now")
+        msg = result_str + chr(10) + "**JACKPOT!** You won **" + str(winnings) + "** embers! youre literally rich now"
+        await ctx.send(msg)
     elif result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
         winnings = amount * 2
         data["embers"] += winnings
         update_user_data(user_id, "embers", data["embers"])
-        await ctx.send(f"{' | '.join(result)}\nNice! Two matches! You got **{winnings}** embers back")
+        msg = result_str + chr(10) + "Nice! Two matches! You got **" + str(winnings) + "** embers back"
+        await ctx.send(msg)
     else:
         update_user_data(user_id, "embers", data["embers"])
-        await ctx.send(f"{' | '.join(result)}\nNothing matched. Lost **{amount}** embers. better luck next time lol")
+        msg = result_str + chr(10) + "Nothing matched. Lost **" + str(amount) + "** embers. better luck next time lol"
+        await ctx.send(msg)
 
 # Run the bot
 if __name__ == "__main__":
