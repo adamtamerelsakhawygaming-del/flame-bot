@@ -1,5409 +1,6182 @@
 import discord
-from discord.ext import commands, tasks
-import asyncio
-import random
+from discord.ext import commands
 import json
 import os
-import datetime
-from collections import defaultdict
+import random
+import asyncio
+from datetime import datetime, timedelta
 
+# ── CONFIG ──
 OWNER_ID = 1444293963812180120
-PREFIXES = ["f ", "flame "]
-CURRENCY = "embers"
-TOKEN = os.getenv("DISCORD_TOKEN")
+BOT_PREFIXES = ("f ", "flame ")
+DATA_DIR = "./bot_data"
 
-class DataStore:
-    def __init__(self):
-        self.users = {}
-        self.guilds = {}
-        self.creatures = {}
-        self.marriages = {}
-        self.cults = {}
-        self.auctions = []
-        self.streaks = {}
-        self.loans = {}
-        self.inventory = defaultdict(lambda: defaultdict(int))
-        self.server_settings = defaultdict(dict)
+# ensure data directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
 
-    def get_user(self, user_id):
-        if str(user_id) not in self.users:
-            self.users[str(user_id)] = {
-                "embers": 100, "bank": 0, "xp": 0, "level": 1,
-                "daily_streak": 0, "last_daily": None, "creatures": [],
-                "married_to": None, "cult": None,
-                "duels_won": 0, "duels_lost": 0,
-                "raids_won": 0, "raids_lost": 0,
-                "scams_success": 0, "scams_failed": 0,
-                "heists_success": 0, "heists_failed": 0,
-                "total_gambled": 0, "total_earned": 0,
-                "total_spent": 0, "warnings": 0,
-                "created_at": datetime.datetime.now().isoformat()
-            }
-        return self.users[str(user_id)]
+def get_user_path(user_id):
+  return os.path.join(DATA_DIR, f"{user_id}.json")
 
-    def save(self):
-        with open("bot_data.json", "w") as f:
-            json.dump({
-                "users": self.users, "guilds": self.guilds,
-                "creatures": self.creatures, "marriages": self.marriages,
-                "cults": self.cults, "auctions": self.auctions,
-                "streaks": self.streaks, "loans": self.loans,
-                "inventory": dict(self.inventory),
-                "server_settings": dict(self.server_settings)
-            }, f, default=str)
+def load_user(user_id):
+  path = get_user_path(user_id)
+  if os.path.exists(path):
+    with open(path, "r") as f:
+      return json.load(f)
+  return {
+    "embers": 0,
+    "daily_streak": 0,
+    "last_daily": None,
+    "loan": 0,
+    "loan_due": None,
+    "creatures": [],
+    "married_to": None,
+    "inventory": [],
+    "xp": 0,
+    "level": 1,
+    "wins": 0,
+    "losses": 0,
+    "cooldowns": {}
+  }
 
-    def load(self):
-        try:
-            with open("bot_data.json", "r") as f:
-                data = json.load(f)
-                self.users = data.get("users", {})
-                self.guilds = data.get("guilds", {})
-                self.creatures = data.get("creatures", {})
-                self.marriages = data.get("marriages", {})
-                self.cults = data.get("cults", {})
-                self.auctions = data.get("auctions", [])
-                self.streaks = data.get("streaks", {})
-                self.loans = data.get("loans", {})
-                self.inventory = defaultdict(lambda: defaultdict(int), data.get("inventory", {}))
-                self.server_settings = defaultdict(dict, data.get("server_settings", {}))
-        except FileNotFoundError:
-            pass
+def save_user(user_id, data):
+  path = get_user_path(user_id)
+  with open(path, "w") as f:
+    json.dump(data, f, indent=2)
 
-data = DataStore()
-data.load()
+def get_all_user_ids():
+  files = os.listdir(DATA_DIR)
+  return [int(f.replace(".json", "")) for f in files if f.endswith(".json")]
 
-intents = discord.Intents.all()
+# ── CUSTOM CHECKS ──
+def is_owner():
+  async def predicate(ctx):
+    if ctx.author.id != OWNER_ID:
+      await ctx.send("nah you can't use this command as ur not the bot owner")
+      return False
+    return True
+  return commands.check(predicate)
+
+def has_mod_perms():
+  async def predicate(ctx):
+    if ctx.author.id == OWNER_ID:
+      return True
+    if ctx.author.guild_permissions.kick_members or ctx.author.guild_permissions.ban_members or ctx.author.guild_permissions.manage_messages or ctx.author.guild_permissions.manage_roles:
+      return True
+    await ctx.send("bruh you dont have mod perms for this")
+    return False
+  return commands.check(predicate)
+
+# ── BOT SETUP ──
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
 
 class FlameBot(commands.Bot):
-    def __init__(self):
-        super().__init__(
-            command_prefix=self.get_prefix,
-            intents=intents,
-            help_command=None,
-            case_insensitive=True
-        )
+  def __init__(self):
+    super().__init__(
+      command_prefix=BOT_PREFIXES,
+      intents=intents,
+      case_insensitive=True,
+      help_command=None
+    )
 
-    async def get_prefix(self, message):
-        return PREFIXES
-
-    async def setup_hook(self):
-        self.auto_save.start()
-
-    @tasks.loop(minutes=5)
-    async def auto_save(self):
-        data.save()
-
-    async def on_ready(self):
-        print(f"flame bot online as {self.user}")
-        await self.change_presence(activity=discord.Game(name="f help | flame help"))
+  async def on_ready(self):
+    print(f"flame bot is online as {self.user}")
+    await self.change_presence(activity=discord.Game(name="f help | flame help"))
 
 bot = FlameBot()
 
-def is_owner():
-    async def predicate(ctx):
-        if ctx.author.id != OWNER_ID:
-            await ctx.send("nah you can't use this command as ur not the bot owner. nice try tho lol")
-            return False
-        return True
-    return commands.check(predicate)
+# ── ERROR HANDLER ──
+@bot.event
+async def on_command_error(ctx, error):
+  if isinstance(error, commands.CommandNotFound):
+    return
+  if isinstance(error, commands.MissingRequiredArgument):
+    await ctx.send("bro youre missing some arguments, try f help")
+    return
+  if isinstance(error, commands.BadArgument):
+    await ctx.send("that argument doesnt look right my guy")
+    return
+  if isinstance(error, commands.CheckFailure):
+    return
+  print(f"error: {error}")
 
-def has_mod_perms():
-    async def predicate(ctx):
-        if ctx.author.id == OWNER_ID:
-            return True
-        if ctx.author.guild_permissions.kick_members or ctx.author.guild_permissions.ban_members or ctx.author.guild_permissions.manage_messages or ctx.author.guild_permissions.manage_nicknames or ctx.author.guild_permissions.manage_roles:
-            return True
-        await ctx.send("you need mod perms for that bro. get some roles first")
-        return False
-    return commands.check(predicate)
-
-def has_admin_perms():
-    async def predicate(ctx):
-        if ctx.author.id == OWNER_ID:
-            return True
-        if ctx.author.guild_permissions.administrator:
-            return True
-        await ctx.send("admin only sorry. go cry to the server owner")
-        return False
-    return commands.check(predicate)
-
-# ==================== ECONOMY COMMANDS ====================
-@bot.command(aliases=["bal", "money", "cash"])
-async def embers_cmd(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    embed = discord.Embed(title=f"{target.display_name}'s wallet", color=0xff6b35)
-    embed.add_field(name="wallet", value=f"{u['embers']:,} {CURRENCY}", inline=True)
-    embed.add_field(name="bank", value=f"{u['bank']:,} {CURRENCY}", inline=True)
-    embed.add_field(name="total", value=f"{u['embers'] + u['bank']:,} {CURRENCY}", inline=True)
-    embed.add_field(name="level", value=f"{u['level']} ({u['xp']} xp)", inline=True)
-    await ctx.send(embed=embed)
+# ── ECONOMY COMMANDS (from picture) ──
 
 @bot.command()
-@commands.cooldown(1, 86400, commands.BucketType.user)
+async def embers(ctx):
+  """check your ember balance"""
+  data = load_user(ctx.author.id)
+  bal = data["embers"]
+  responses = [
+    f"you got **{bal}** embers. not bad i guess 🔥",
+    f"**{bal}** embers in the bank. spend em wisely 💰",
+    f"youre sitting on **{bal}** embers. baller status?",
+    f"**{bal}** embers. dont blow it all in one place 😏"
+  ]
+  await ctx.send(random.choice(responses))
+
+@bot.command()
 async def daily(ctx):
-    u = data.get_user(ctx.author.id)
-    streak = u.get("daily_streak", 0)
-    last = u.get("last_daily")
-    if last:
-        last_date = datetime.datetime.fromisoformat(last)
-        if (datetime.datetime.now() - last_date).days > 1:
-            streak = 0
-    streak += 1
-    base = 500
-    bonus = min(streak * 50, 1000)
-    total = base + bonus
-    u["embers"] += total
-    u["daily_streak"] = streak
-    u["last_daily"] = datetime.datetime.now().isoformat()
-    msg = f"you got {total:,} {CURRENCY}"
-    if streak > 1:
-        msg += f" (streak x{streak} - +{bonus} bonus)"
-    msg += "!"
-    if streak >= 7:
-        msg += " damn u been grinding fr fr"
-    await ctx.send(msg)
+  """claim your daily embers"""
+  data = load_user(ctx.author.id)
+  now = datetime.utcnow()
+
+  if data["last_daily"]:
+    last = datetime.fromisoformat(data["last_daily"])
+    if now - last < timedelta(hours=24):
+      remaining = timedelta(hours=24) - (now - last)
+      hours = int(remaining.total_seconds() // 3600)
+      mins = int((remaining.total_seconds() % 3600) // 60)
+      await ctx.send(f"chill bro, come back in **{hours}h {mins}m** for your next daily ⏰")
+      return
+    elif now - last < timedelta(hours=48):
+      data["daily_streak"] += 1
+    else:
+      data["daily_streak"] = 1
+  else:
+    data["daily_streak"] = 1
+
+  base = 500
+  streak_bonus = min(data["daily_streak"] * 50, 1000)
+  total = base + streak_bonus
+
+  data["embers"] += total
+  data["last_daily"] = now.isoformat()
+  save_user(ctx.author.id, data)
+
+  streak_msg = f"streak: **{data['daily_streak']}** 🔥" if data["daily_streak"] > 1 else ""
+  await ctx.send(f"heres your **{total}** embers! {streak_msg} come back tomorrow for more 💰")
 
 @bot.command()
 async def streak(ctx):
-    u = data.get_user(ctx.author.id)
-    streak = u.get("daily_streak", 0)
-    if streak == 0:
-        await ctx.send("you got no streak bro. do f daily to start one")
-    else:
-        await ctx.send(f"you're on a {streak} day streak. keep it up or lose it lol")
+  """check your daily streak"""
+  data = load_user(ctx.author.id)
+  streak = data["daily_streak"]
+  if streak == 0:
+    await ctx.send("you dont even have a streak yet bro, do f daily")
+  else:
+    await ctx.send(f"youre on a **{streak}** day streak! keep it going 🔥")
 
 @bot.command()
 async def beg(ctx):
-    u = data.get_user(ctx.author.id)
-    if random.random() < 0.6:
-        amount = random.randint(10, 100)
-        u["embers"] += amount
-        responses = [
-            f"some random person felt bad and gave you {amount} {CURRENCY}",
-            f"you begged so hard someone tossed you {amount} {CURRENCY}",
-            f"a stranger pitied you and gave {amount} {CURRENCY}",
-            f"you got {amount} {CURRENCY} from a generous old lady"
-        ]
-    else:
-        responses = [
-            "everyone ignored you lmao",
-            "someone spat on you instead of giving money",
-            "a dog barked at you. no embers today",
-            "you got kicked out of the store for begging"
-        ]
-    await ctx.send(random.choice(responses))
-
-@bot.command()
-async def scam(ctx, user: discord.Member = None):
-    if not user:
-        await ctx.send("who u tryna scam bro? mention someone")
-        return
-    if user.id == ctx.author.id:
-        await ctx.send("you can't scam yourself dumbass")
-        return
-    if user.bot:
-        await ctx.send("bots are too smart for your scams lol")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if target["embers"] < 50:
-        await ctx.send(f"{user.display_name} is broke af. not worth scamming")
-        return
-    if random.random() < 0.4:
-        amount = random.randint(50, min(500, target["embers"]))
-        target["embers"] -= amount
-        u["embers"] += amount
-        u["scams_success"] += 1
-        await ctx.send(f"you successfully scammed {user.display_name} for {amount} {CURRENCY}! you evil genius")
-    else:
-        u["scams_failed"] += 1
-        fine = random.randint(20, 100)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"you got caught scamming and got fined {fine} {CURRENCY}. maybe don't be so obvious next time lol")
-
-@bot.command()
-async def invest(ctx, amount: str):
-    u = data.get_user(ctx.author.id)
-    if amount.lower() == "all":
-        amount = u["embers"]
-    else:
-        try:
-            amount = int(amount)
-        except:
-            await ctx.send("put a number or 'all' bro")
-            return
-    if amount < 50:
-        await ctx.send(f"minimum investment is 50 {CURRENCY}. go beg for more")
-        return
-    if u["embers"] < amount:
-        await ctx.send("you broke af. can't invest what you don't have")
-        return
-    u["embers"] -= amount
-    roll = random.random()
-    if roll < 0.3:
-        loss = int(amount * random.uniform(0.5, 1.0))
-        await ctx.send(f"market crashed and you lost {loss} {CURRENCY}. shoulda put it in the bank lol")
-    elif roll < 0.6:
-        profit = int(amount * random.uniform(0.1, 0.5))
-        u["embers"] += amount + profit
-        await ctx.send(f"decent returns. you made {profit} {CURRENCY} profit")
-    elif roll < 0.85:
-        profit = int(amount * random.uniform(0.5, 1.5))
-        u["embers"] += amount + profit
-        await ctx.send(f"stonks! you made {profit} {CURRENCY} profit!")
-    else:
-        profit = int(amount * random.uniform(2.0, 5.0))
-        u["embers"] += amount + profit
-        await ctx.send(f"JACKPOT! you made {profit} {CURRENCY} profit! you're basically warren buffett now")
-
-@bot.command()
-async def heist(ctx, user: discord.Member = None):
-    if not user:
-        await ctx.send("who's bank we hitting?")
-        return
-    if user.id == ctx.author.id:
-        await ctx.send("you can't heist yourself lol")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if target["bank"] < 200:
-        await ctx.send(f"{user.display_name}'s bank is dry. pick a richer target")
-        return
-    if random.random() < 0.35:
-        amount = random.randint(100, min(1000, target["bank"]))
-        target["bank"] -= amount
-        u["embers"] += amount
-        u["heists_success"] += 1
-        await ctx.send(f"successful heist! you stole {amount} {CURRENCY} from {user.display_name}'s bank!")
-    else:
-        u["heists_failed"] += 1
-        fine = random.randint(50, 200)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"heist failed! security caught you and fined you {fine} {CURRENCY}. smooth criminal my ass")
-
-@bot.command()
-async def loan(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount < 100:
-        await ctx.send(f"minimum loan is 100 {CURRENCY}")
-        return
-    if amount > 5000:
-        await ctx.send("max loan is 5000 {CURRENCY}. we ain't a charity")
-        return
-    if str(ctx.author.id) in data.loans:
-        await ctx.send("you already owe us money bro. pay up first")
-        return
-    u["embers"] += amount
-    data.loans[str(ctx.author.id)] = {
-        "amount": amount, "due": amount * 1.2,
-        "taken": datetime.datetime.now().isoformat()
-    }
-    await ctx.send(f"you borrowed {amount} {CURRENCY}. you owe {int(amount * 1.2)} {CURRENCY} back. don't skip town lol")
-
-@bot.command()
-async def repay(ctx):
-    uid = str(ctx.author.id)
-    if uid not in data.loans:
-        await ctx.send("you don't have any loans bro. living debt free i see")
-        return
-    u = data.get_user(ctx.author.id)
-    loan = data.loans[uid]
-    if u["embers"] < loan["due"]:
-        await ctx.send(f"you need {loan['due']} {CURRENCY} to repay. you're short by {loan['due'] - u['embers']}")
-        return
-    u["embers"] -= int(loan["due"])
-    del data.loans[uid]
-    await ctx.send("loan repaid! your credit score probably still trash tho")
-
-@bot.command()
-async def burn(ctx, amount: str):
-    u = data.get_user(ctx.author.id)
-    if amount.lower() == "all":
-        amount = u["embers"]
-    else:
-        try:
-            amount = int(amount)
-        except:
-            await ctx.send("number or 'all' please")
-            return
-    if amount > u["embers"]:
-        await ctx.send("you can't burn what you don't have")
-        return
-    if amount <= 0:
-        await ctx.send(f"burn at least 1 {CURRENCY} you cheapskate")
-        return
-    u["embers"] -= amount
-    await ctx.send(f"you burned {amount} {CURRENCY}. why? just why? you could've given it to me lol")
-
-@bot.command()
-async def send(ctx, amount: int, user: discord.Member = None):
-    if not user:
-        await ctx.send("who you sending embers to?")
-        return
-    if user.id == ctx.author.id:
-        await ctx.send("you can't send embers to yourself that's just moving money around lol")
-        return
-    if user.bot:
-        await ctx.send("bots don't need embers bro")
-        return
-    if amount <= 0:
-        await ctx.send(f"send at least 1 {CURRENCY}")
-        return
-    u = data.get_user(ctx.author.id)
-    if u["embers"] < amount:
-        await ctx.send("you broke. can't send what you don't have")
-        return
-    msg = await ctx.send(f"are you sure you want to send {amount:,} {CURRENCY} to {user.display_name}? react with ✅ to confirm")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=30.0, check=check)
-        if str(reaction.emoji) == "✅":
-            u["embers"] -= amount
-            target = data.get_user(user.id)
-            target["embers"] += amount
-            await ctx.send(f"sent {amount:,} {CURRENCY} to {user.display_name}! what a generous king/queen")
-        else:
-            await ctx.send("transaction cancelled. keeping your money i see")
-    except asyncio.TimeoutError:
-        await ctx.send("you took too long. transaction cancelled")
-
-# ==================== CREATURE COMMANDS ====================
-CREATURE_NAMES = ["dragon", "phoenix", "golem", "wolf", "serpent", "imp", "wyvern", "basilisk", "chimera", "griffin", "kraken", "leviathan", "behemoth", "unicorn", "pegasus", "centaur", "minotaur", "hydra"]
-CREATURE_TYPES = ["fire", "water", "earth", "air", "dark", "light", "nature", "electric", "ice", "metal"]
-
-@bot.command()
-async def summon(ctx):
-    u = data.get_user(ctx.author.id)
-    cost = 100
-    if u["embers"] < cost:
-        await ctx.send(f"summoning costs {cost} {CURRENCY}. go beg for more")
-        return
-    u["embers"] -= cost
-    creature = {
-        "id": random.randint(100000, 999999),
-        "name": random.choice(CREATURE_NAMES),
-        "type": random.choice(CREATURE_TYPES),
-        "level": 1, "xp": 0,
-        "mood": random.randint(50, 100),
-        "hunger": random.randint(50, 100),
-        "owner": ctx.author.id, "evolutions": 0, "wins": 0, "fav": False
-    }
-    cid = str(creature["id"])
-    data.creatures[cid] = creature
-    u["creatures"].append(cid)
-    embed = discord.Embed(title="🎉 new creature summoned!", color=0x00ff00)
-    embed.add_field(name="name", value=creature["name"], inline=True)
-    embed.add_field(name="type", value=creature["type"], inline=True)
-    embed.add_field(name="level", value=creature["level"], inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def cage(ctx):
-    u = data.get_user(ctx.author.id)
-    if not u["creatures"]:
-        await ctx.send("you got no creatures bro. use f summon to get one")
-        return
-    embed = discord.Embed(title="your creatures", color=0x7289da)
-    for cid in u["creatures"][:10]:
-        if cid in data.creatures:
-            c = data.creatures[cid]
-            embed.add_field(
-                name=f"{c['name']} #{c['id']}",
-                value=f"lvl {c['level']} {c['type']} | mood: {c['mood']}% | hunger: {c['hunger']}%",
-                inline=False
-            )
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def release(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("that's not your creature bro")
-        return
-    u["creatures"].remove(cid)
-    if cid in data.creatures:
-        del data.creatures[cid]
-    await ctx.send(f"released creature #{creature_id}. fly free little buddy... or get eaten idk")
-
-@bot.command()
-async def feed(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not your creature")
-        return
-    cost = 20
-    if u["embers"] < cost:
-        await ctx.send(f"feeding costs {cost} {CURRENCY}")
-        return
-    u["embers"] -= cost
-    c = data.creatures[cid]
-    c["hunger"] = min(100, c["hunger"] + 30)
-    c["mood"] = min(100, c["mood"] + 10)
-    await ctx.send(f"fed {c['name']}. it's looking happy and full now")
-
-@bot.command()
-async def neglect(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    c = data.creatures[cid]
-    c["hunger"] = max(0, c["hunger"] - 20)
-    c["mood"] = max(0, c["mood"] - 15)
-    await ctx.send(f"you neglected {c['name']}. it's sad now. you monster")
-
-@bot.command()
-async def mood(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    c = data.creatures[cid]
-    await ctx.send(f"{c['name']} is feeling {c['mood']}% happy. hunger at {c['hunger']}%")
-
-@bot.command()
-async def evolve(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    c = data.creatures[cid]
-    needed = c["level"] * 100
-    if c["xp"] < needed:
-        await ctx.send(f"needs {needed} xp to evolve. currently at {c['xp']}")
-        return
-    cost = c["level"] * 200
-    if u["embers"] < cost:
-        await ctx.send(f"evolution costs {cost} {CURRENCY}")
-        return
-    u["embers"] -= cost
-    c["level"] += 1
-    c["xp"] = 0
-    c["evolutions"] += 1
-    old_name = c["name"]
-    c["name"] = "mega " + c["name"] if c["evolutions"] == 1 else "ultra " + c["name"]
-    await ctx.send(f"{old_name} evolved into {c['name']}! it's now level {c['level']}!")
-
-@bot.command()
-async def breed(ctx, id1: int, id2: int):
-    cid1, cid2 = str(id1), str(id2)
-    u = data.get_user(ctx.author.id)
-    if cid1 not in u["creatures"] or cid2 not in u["creatures"]:
-        await ctx.send("both creatures gotta be yours bro")
-        return
-    if cid1 == cid2:
-        await ctx.send("can't breed a creature with itself. that's weird")
-        return
-    c1, c2 = data.creatures[cid1], data.creatures[cid2]
-    cost = 300
-    if u["embers"] < cost:
-        await ctx.send(f"breeding costs {cost} {CURRENCY}")
-        return
-    u["embers"] -= cost
-    baby = {
-        "id": random.randint(100000, 999999),
-        "name": f"baby {c1['name']}",
-        "type": random.choice([c1["type"], c2["type"]]),
-        "level": 1, "xp": 0, "mood": 80, "hunger": 80,
-        "owner": ctx.author.id, "evolutions": 0, "wins": 0, "fav": False
-    }
-    bcid = str(baby["id"])
-    data.creatures[bcid] = baby
-    u["creatures"].append(bcid)
-    await ctx.send(f"{c1['name']} and {c2['name']} had a baby! welcome baby {baby['name']}!")
-
-@bot.command()
-async def sacrifice(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    c = data.creatures[cid]
-    reward = c["level"] * 50 + c["evolutions"] * 200
-    u["embers"] += reward
-    u["creatures"].remove(cid)
-    del data.creatures[cid]
-    await ctx.send(f"sacrificed {c['name']} for {reward} {CURRENCY}. dark magic stuff right there")
-
-@bot.command()
-async def rename(ctx, creature_id: int, *, new_name: str):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    cost = 50
-    if u["embers"] < cost:
-        await ctx.send(f"renaming costs {cost} {CURRENCY}")
-        return
-    u["embers"] -= cost
-    old = data.creatures[cid]["name"]
-    data.creatures[cid]["name"] = new_name
-    await ctx.send(f"renamed {old} to {new_name}! cute name lol")
-
-@bot.command()
-async def favorite(ctx, creature_id: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    for other_cid in u["creatures"]:
-        if other_cid in data.creatures:
-            data.creatures[other_cid]["fav"] = False
-    data.creatures[cid]["fav"] = True
-    await ctx.send(f"{data.creatures[cid]['name']} is now your favorite! no favoritism tho...")
-
-@bot.command()
-async def trade(ctx, user: discord.Member, your_id: int, their_id: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't trade with yourself")
-        return
-    your_cid = str(your_id)
-    their_cid = str(their_id)
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if your_cid not in u["creatures"]:
-        await ctx.send("that's not your creature")
-        return
-    if their_cid not in target["creatures"]:
-        await ctx.send(f"{user.display_name} doesn't own that creature")
-        return
-    msg = await ctx.send(f"{user.mention}, {ctx.author.display_name} wants to trade their {data.creatures[your_cid]['name']} for your {data.creatures[their_cid]['name']}. react ✅ to accept")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == user and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=60.0, check=check)
-        if str(reaction.emoji) == "✅":
-            u["creatures"].remove(your_cid)
-            u["creatures"].append(their_cid)
-            target["creatures"].remove(their_cid)
-            target["creatures"].append(your_cid)
-            data.creatures[your_cid]["owner"] = user.id
-            data.creatures[their_cid]["owner"] = ctx.author.id
-            await ctx.send("trade complete! both of you got new pets")
-        else:
-            await ctx.send("trade declined. maybe next time")
-    except asyncio.TimeoutError:
-        await ctx.send("trade expired. nobody reacted in time")
-
-@bot.command()
-async def auction(ctx, creature_id: int, starting_bid: int):
-    cid = str(creature_id)
-    u = data.get_user(ctx.author.id)
-    if cid not in u["creatures"]:
-        await ctx.send("not yours")
-        return
-    auction = {
-        "id": random.randint(1000, 9999),
-        "seller": ctx.author.id,
-        "creature": cid,
-        "current_bid": starting_bid,
-        "highest_bidder": None,
-        "end_time": (datetime.datetime.now() + datetime.timedelta(minutes=5)).isoformat(),
-        "active": True
-    }
-    data.auctions.append(auction)
-    await ctx.send(f"auction started for {data.creatures[cid]['name']}! starting bid: {starting_bid} {CURRENCY}. use f bid {auction['id']} <amount> to bid")
-
-@bot.command()
-async def bid(ctx, auction_id: int, amount: int):
-    auction = None
-    for a in data.auctions:
-        if a["id"] == auction_id and a["active"]:
-            auction = a
-            break
-    if not auction:
-        await ctx.send("auction not found or ended")
-        return
-    if datetime.datetime.now() > datetime.datetime.fromisoformat(auction["end_time"]):
-        auction["active"] = False
-        await ctx.send("auction already ended")
-        return
-    u = data.get_user(ctx.author.id)
-    if amount <= auction["current_bid"]:
-        await ctx.send("bid higher than current bid")
-        return
-    if u["embers"] < amount:
-        await ctx.send("you broke. can't bid what you don't have")
-        return
-    if auction["highest_bidder"]:
-        prev = data.get_user(auction["highest_bidder"])
-        prev["embers"] += auction["current_bid"]
-    u["embers"] -= amount
-    auction["current_bid"] = amount
-    auction["highest_bidder"] = ctx.author.id
-    await ctx.send(f"you're the highest bidder with {amount} {CURRENCY}!")
-
-@bot.command()
-async def inspect(ctx, creature_id: int):
-    cid = str(creature_id)
-    if cid not in data.creatures:
-        await ctx.send("creature not found")
-        return
-    c = data.creatures[cid]
-    embed = discord.Embed(title=f"inspecting {c['name']}", color=0x7289da)
-    embed.add_field(name="id", value=c["id"], inline=True)
-    embed.add_field(name="type", value=c["type"], inline=True)
-    embed.add_field(name="level", value=c["level"], inline=True)
-    embed.add_field(name="evolutions", value=c["evolutions"], inline=True)
-    embed.add_field(name="mood", value=f"{c['mood']}%", inline=True)
-    embed.add_field(name="hunger", value=f"{c['hunger']}%", inline=True)
-    embed.add_field(name="wins", value=c["wins"], inline=True)
-    embed.add_field(name="favorite", value="yes" if c["fav"] else "no", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def adopt(ctx, user: discord.Member, creature_id: int):
-    cid = str(creature_id)
-    target = data.get_user(user.id)
-    u = data.get_user(ctx.author.id)
-    if cid not in target["creatures"]:
-        await ctx.send(f"{user.display_name} doesn't have that creature")
-        return
-    msg = await ctx.send(f"{user.mention}, {ctx.author.display_name} wants to adopt your {data.creatures[cid]['name']}. react ✅ to give it away")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == user and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=60.0, check=check)
-        if str(reaction.emoji) == "✅":
-            target["creatures"].remove(cid)
-            u["creatures"].append(cid)
-            data.creatures[cid]["owner"] = ctx.author.id
-            await ctx.send(f"{ctx.author.display_name} adopted {data.creatures[cid]['name']}! take good care of it")
-        else:
-            await ctx.send("adoption denied. cold hearted fr")
-    except asyncio.TimeoutError:
-        await ctx.send("adoption request expired")
-
-@bot.command()
-async def kidnap(ctx, user: discord.Member, creature_id: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't kidnap your own creature weirdo")
-        return
-    cid = str(creature_id)
-    target = data.get_user(user.id)
-    u = data.get_user(ctx.author.id)
-    if cid not in target["creatures"]:
-        await ctx.send("they don't have that creature")
-        return
-    if random.random() < 0.15:
-        target["creatures"].remove(cid)
-        u["creatures"].append(cid)
-        data.creatures[cid]["owner"] = ctx.author.id
-        await ctx.send(f"you successfully kidnapped {data.creatures[cid]['name']}! you're a monster but it worked lol")
-    else:
-        fine = random.randint(100, 500)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"kidnap failed! {user.display_name} caught you and you got fined {fine} {CURRENCY}. maybe don't be creepy next time")
-
-# ==================== COMBAT COMMANDS ====================
-@bot.command()
-async def duel(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't duel yourself")
-        return
-    if user.bot:
-        await ctx.send("bots are too op. pick a human")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    msg = await ctx.send(f"{user.mention}, {ctx.author.display_name} wants to duel! react ✅ to accept")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == user and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=30.0, check=check)
-        if str(reaction.emoji) != "✅":
-            await ctx.send("they chickened out lol")
-            return
-    except asyncio.TimeoutError:
-        await ctx.send("they didn't respond. coward")
-        return
-    u_power = u["level"] * 10 + random.randint(0, 50)
-    t_power = target["level"] * 10 + random.randint(0, 50)
-    if u_power > t_power:
-        winnings = random.randint(50, 200)
-        u["embers"] += winnings
-        u["duels_won"] += 1
-        target["duels_lost"] += 1
-        await ctx.send(f"you won the duel! {user.display_name} got destroyed and you won {winnings} {CURRENCY}")
-    elif t_power > u_power:
-        loss = random.randint(20, 100)
-        u["embers"] = max(0, u["embers"] - loss)
-        u["duels_lost"] += 1
-        target["duels_won"] += 1
-        await ctx.send(f"you lost the duel to {user.display_name}. they took {loss} {CURRENCY} from you. get good lol")
-    else:
-        await ctx.send("it was a draw! both of you are equally mid")
-
-@bot.command()
-async def raid(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't raid yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    u_power = u["level"] * 15 + random.randint(0, 100)
-    t_power = target["level"] * 15 + random.randint(0, 100)
-    if u_power > t_power:
-        loot = random.randint(100, 500)
-        actual_loot = min(loot, target["embers"])
-        target["embers"] -= actual_loot
-        u["embers"] += actual_loot
-        u["raids_won"] += 1
-        target["raids_lost"] += 1
-        await ctx.send(f"raid successful! you stole {actual_loot} {CURRENCY} from {user.display_name}! they didn't see it coming")
-    else:
-        u["raids_lost"] += 1
-        target["raids_won"] += 1
-        await ctx.send(f"raid failed! {user.display_name}'s defenses were too strong. you retreated with your tail between your legs")
-
-@bot.command()
-async def ambush(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't ambush yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if random.random() < 0.5:
-        loot = random.randint(50, 300)
-        actual = min(loot, target["embers"])
-        target["embers"] -= actual
-        u["embers"] += actual
-        await ctx.send(f"ambush successful! caught {user.display_name} off guard and took {actual} {CURRENCY}")
-    else:
-        await ctx.send(f"{user.display_name} was too alert. ambush failed and you ran away")
-
-@bot.command()
-async def defend(ctx):
-    await ctx.send("your base is fortified for the next hour. good luck getting raided now lol")
-
-@bot.command()
-async def berserk(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't berserk yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if random.random() < 0.6:
-        damage = random.randint(100, 1000)
-        actual = min(damage, target["embers"])
-        target["embers"] -= actual
-        u["embers"] += actual // 2
-        await ctx.send(f"BERSERK MODE ACTIVATED! you destroyed {user.display_name} and took {actual} {CURRENCY}! you only kept half cuz you were too angry to count properly")
-    else:
-        self_damage = random.randint(50, 200)
-        u["embers"] = max(0, u["embers"] - self_damage)
-        await ctx.send(f"you went berserk but tripped and hurt yourself. lost {self_damage} {CURRENCY} to medical bills lol")
-
-@bot.command()
-async def bribe(ctx, user: discord.Member, amount: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't bribe yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    if u["embers"] < amount:
-        await ctx.send("you broke. can't bribe with air")
-        return
-    u["embers"] -= amount
-    target = data.get_user(user.id)
-    target["embers"] += amount
-    await ctx.send(f"you bribed {user.display_name} with {amount} {CURRENCY} to not attack you. money solves everything huh")
-
-@bot.command()
-async def flee(ctx):
-    responses = [
-        "you ran away like a coward. at least you're alive",
-        "you fled so fast you left your shoes behind",
-        "tactical retreat! that's what we're calling it now",
-        "you escaped... this time"
-    ]
-    await ctx.send(random.choice(responses))
-
-@bot.command()
-async def taunt(ctx, user: discord.Member):
-    taunts = [
-        f"{ctx.author.display_name} says {user.display_name} fights like a wet noodle",
-        f"{ctx.author.display_name} called {user.display_name} a noob. harsh but fair",
-        f"{ctx.author.display_name} said {user.display_name}'s mom could beat them in a duel",
-        f"{ctx.author.display_name} thinks {user.display_name} is all talk no action"
-    ]
-    await ctx.send(random.choice(taunts))
-
-@bot.command()
-async def combo(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't combo yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    hits = random.randint(2, 5)
-    total = 0
-    for _ in range(hits):
-        hit = random.randint(20, 100)
-        actual = min(hit, target["embers"])
-        target["embers"] -= actual
-        total += actual
-    u["embers"] += total // 2
-    await ctx.send(f"COMBO x{hits}! you hit {user.display_name} {hits} times and took {total} {CURRENCY}! anime fight scene energy")
-
-@bot.command()
-async def revive(ctx):
-    u = data.get_user(ctx.author.id)
-    cost = 200
-    if u["embers"] < cost:
-        await ctx.send(f"reviving costs {cost} {CURRENCY}. stay dead then lol")
-        return
-    u["embers"] -= cost
-    await ctx.send("you revived! back from the dead like nothing happened. video game logic")
-
-@bot.command()
-async def wager(ctx, user: discord.Member, amount: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't wager yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if u["embers"] < amount or target["embers"] < amount:
-        await ctx.send("one of you is too broke for this wager")
-        return
-    msg = await ctx.send(f"{user.mention}, {ctx.author.display_name} wants to wager {amount} {CURRENCY}. react ✅ to accept")
-    await msg.add_reaction("✅")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == user and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=30.0, check=check)
-        if str(reaction.emoji) != "✅":
-            await ctx.send("they declined the wager. scared of losing probably")
-            return
-    except asyncio.TimeoutError:
-        await ctx.send("they didn't respond. wager cancelled")
-        return
-    if random.random() < 0.5:
-        u["embers"] += amount
-        target["embers"] -= amount
-        await ctx.send(f"you won the wager! took {amount} {CURRENCY} from {user.display_name}! easy money")
-    else:
-        u["embers"] -= amount
-        target["embers"] += amount
-        await ctx.send(f"you lost the wager! {user.display_name} took your {amount} {CURRENCY}. skill issue")
-
-@bot.command()
-async def rank(ctx):
-    u = data.get_user(ctx.author.id)
-    total = u["duels_won"] + u["raids_won"]
-    if total < 5:
-        rank = "wood"
-    elif total < 15:
-        rank = "bronze"
-    elif total < 30:
-        rank = "silver"
-    elif total < 50:
-        rank = "gold"
-    elif total < 100:
-        rank = "platinum"
-    else:
-        rank = "diamond"
-    await ctx.send(f"your combat rank is {rank}! {u['duels_won']} duels won, {u['raids_won']} raids won. keep grinding")
-
-# ==================== GAMBLING COMMANDS ====================
-@bot.command()
-async def dice(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("you broke")
-        return
-    if amount <= 0:
-        await ctx.send("bet something")
-        return
-    u["total_gambled"] += amount
-    roll = random.randint(1, 6)
-    bot_roll = random.randint(1, 6)
-    if roll > bot_roll:
-        u["embers"] += amount
-        u["total_earned"] += amount
-        await ctx.send(f"you rolled {roll}, i rolled {bot_roll}. you win {amount} {CURRENCY}! lucky")
-    elif roll < bot_roll:
-        u["embers"] -= amount
-        await ctx.send(f"you rolled {roll}, i rolled {bot_roll}. you lose {amount} {CURRENCY}. unlucky")
-    else:
-        await ctx.send(f"both rolled {roll}. tie! nobody wins or loses")
-
-@bot.command()
-async def shells(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    if random.random() < 0.33:
-        winnings = amount * 2
-        u["embers"] += winnings
-        u["total_earned"] += winnings
-        await ctx.send(f"you found the ball! won {winnings} {CURRENCY}! eyes of a hawk")
-    else:
-        u["embers"] -= amount
-        await ctx.send("wrong shell! lost your money. the ball was under the other one lol")
-
-@bot.command()
-async def flip(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    if random.random() < 0.48:
-        u["embers"] += amount
-        u["total_earned"] += amount
-        await ctx.send(f"heads! you won {amount} {CURRENCY}!")
-    else:
-        u["embers"] -= amount
-        await ctx.send(f"tails! you lost {amount} {CURRENCY}. house always wins eventually")
-
-@bot.command()
-async def spin(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    outcomes = [
-        (0.4, amount, "you win your money back"),
-        (0.25, amount * 2, "double or nothing! you won {winnings}"),
-        (0.15, amount * 3, "triple! won {winnings}"),
-        (0.1, amount * 5, "JACKPOT! won {winnings}"),
-        (0.1, 0, "bust! lost it all lol")
-    ]
-    roll = random.random()
-    cumulative = 0
-    for prob, mult, msg in outcomes:
-        cumulative += prob
-        if roll <= cumulative:
-            winnings = int(mult)
-            if winnings > 0:
-                u["embers"] += winnings - amount
-                u["total_earned"] += winnings - amount
-            else:
-                u["embers"] -= amount
-            await ctx.send(msg.replace("{winnings}", f"{winnings} {CURRENCY}"))
-            return
-
-@bot.command()
-async def surge(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    if random.random() < 0.2:
-        winnings = amount * 10
-        u["embers"] += winnings
-        u["total_earned"] += winnings
-        await ctx.send(f"SURGE! {winnings} {CURRENCY}! you're literally on fire!")
-    else:
-        u["embers"] -= amount
-        await ctx.send("surge failed. your money evaporated. shoulda played it safe")
-
-@bot.command()
-async def vault(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    if random.random() < 0.7:
-        profit = int(amount * 0.3)
-        u["embers"] += profit
-        u["total_earned"] += profit
-        await ctx.send(f"vault secured! made {profit} {CURRENCY} profit. boring but safe")
-    else:
-        u["embers"] -= amount
-        await ctx.send("vault got robbed! lost everything. even the safe isn't safe lol")
-
-@bot.command()
-async def pick(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    card = random.choice(["ace", "king", "queen", "jack", "joker"])
-    if card == "ace":
-        winnings = amount * 5
-        u["embers"] += winnings
-        u["total_earned"] += winnings
-        await ctx.send(f"picked the ace! won {winnings} {CURRENCY}!")
-    elif card in ["king", "queen"]:
-        u["embers"] += amount
-        await ctx.send(f"picked {card}! got your money back")
-    else:
-        u["embers"] -= amount
-        await ctx.send(f"picked {card}! lost {amount} {CURRENCY}. shoulda picked better lol")
-
-@bot.command()
-async def chase(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    distance = random.randint(1, 10)
-    if distance <= 3:
-        winnings = amount * 4
-        u["embers"] += winnings
-        u["total_earned"] += winnings
-        await ctx.send(f"caught the rabbit in {distance} tries! won {winnings} {CURRENCY}!")
-    else:
-        u["embers"] -= amount
-        await ctx.send(f"rabbit got away after {distance} tries. lost {amount} {CURRENCY}. fast little bugger")
-
-@bot.command()
-async def chamber(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["total_gambled"] += amount
-    chamber = random.randint(1, 6)
-    if chamber == 1:
-        u["embers"] -= amount
-        await ctx.send("BANG! you lost everything. russian roulette is a bad idea kids")
-    else:
-        winnings = amount * 2
-        u["embers"] += winnings
-        u["total_earned"] += winnings
-        await ctx.send(f"click... safe! won {winnings} {CURRENCY}! living on the edge")
-
-@bot.command()
-async def rig(ctx, user: discord.Member, amount: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't rig against yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    cost = amount // 2
-    if u["embers"] < cost:
-        await ctx.send(f"rigging costs {cost} {CURRENCY}")
-        return
-    u["embers"] -= cost
-    if random.random() < 0.4:
-        actual = min(amount, target["embers"])
-        target["embers"] -= actual
-        u["embers"] += actual
-        await ctx.send(f"rig successful! stole {actual} {CURRENCY} from {user.display_name}. dirty but effective")
-    else:
-        await ctx.send("rig failed! you got caught and lost your setup money. amateur hour")
-
-# ==================== SOCIAL COMMANDS ====================
-@bot.command()
-async def marry(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't marry yourself. that's sad")
-        return
-    if user.bot:
-        await ctx.send("bots can't consent bro")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if u.get("married_to"):
-        await ctx.send("you're already married! divorce first you cheater")
-        return
-    if target.get("married_to"):
-        await ctx.send(f"{user.display_name} is already taken. homewrecker energy")
-        return
-    cost = 1000
-    if u["embers"] < cost:
-        await ctx.send(f"marriage costs {cost} {CURRENCY}. love ain't free")
-        return
-    msg = await ctx.send(f"{user.mention}, {ctx.author.display_name} wants to marry you! react 💍 to accept")
-    await msg.add_reaction("💍")
-    await msg.add_reaction("❌")
-    def check(reaction, reactor):
-        return reactor == user and str(reaction.emoji) in ["💍", "❌"] and reaction.message.id == msg.id
-    try:
-        reaction, reactor = await bot.wait_for("reaction_add", timeout=60.0, check=check)
-        if str(reaction.emoji) == "💍":
-            u["embers"] -= cost
-            u["married_to"] = user.id
-            target["married_to"] = ctx.author.id
-            data.marriages[str(ctx.author.id)] = {
-                "partner": user.id,
-                "date": datetime.datetime.now().isoformat(),
-                "love_points": 0
-            }
-            await ctx.send(f"💍 {ctx.author.display_name} and {user.display_name} are now married! congrats lovebirds")
-        else:
-            await ctx.send(f"{user.display_name} said no. rejected lmao")
-    except asyncio.TimeoutError:
-        await ctx.send("they left you on read. marriage proposal expired")
-
-@bot.command()
-async def divorce(ctx):
-    u = data.get_user(ctx.author.id)
-    if not u.get("married_to"):
-        await ctx.send("you're not even married. what you divorcing?")
-        return
-    partner_id = u["married_to"]
-    partner = data.get_user(partner_id)
-    u["married_to"] = None
-    partner["married_to"] = None
-    if str(ctx.author.id) in data.marriages:
-        del data.marriages[str(ctx.author.id)]
-    if str(partner_id) in data.marriages:
-        del data.marriages[str(partner_id)]
-    await ctx.send("divorced. that'll be 50% of your embers in alimony... just kidding. you're free lol")
-
-@bot.command()
-async def will(ctx, user: discord.Member, amount: int):
-    if user.id == ctx.author.id:
-        await ctx.send("can't will to yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("you don't have that much")
-        return
-    u["will"] = {"to": user.id, "amount": amount}
-    await ctx.send(f"in your will, {user.display_name} gets {amount} {CURRENCY} when you... y'know. morbid but ok")
-
-@bot.command()
-async def cult(ctx, *, name: str):
-    u = data.get_user(ctx.author.id)
-    cost = 5000
-    if u["embers"] < cost:
-        await ctx.send(f"starting a cult costs {cost} {CURRENCY}. cults ain't cheap")
-        return
-    if u.get("cult"):
-        await ctx.send("you're already in a cult. leave first")
-        return
-    u["embers"] -= cost
-    cult_id = str(random.randint(1000, 9999))
-    data.cults[cult_id] = {
-        "name": name, "leader": ctx.author.id,
-        "members": [ctx.author.id], "funds": 0, "level": 1
-    }
-    u["cult"] = cult_id
-    await ctx.send(f"cult '{name}' created! cult_id: {cult_id}. don't let the feds find out")
-
-@bot.command()
-async def betray(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't betray yourself. that's just self-sabotage")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if random.random() < 0.5:
-        amount = random.randint(50, 300)
-        actual = min(amount, target["embers"])
-        target["embers"] -= actual
-        u["embers"] += actual
-        await ctx.send(f"you betrayed {user.display_name} and stole {actual} {CURRENCY}! cold blooded fr")
-    else:
-        await ctx.send(f"tried to betray {user.display_name} but they saw it coming. now they hate you lol")
-
-@bot.command()
-async def tribute(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if not u.get("cult"):
-        await ctx.send("you're not in a cult. join one first or start your own")
-        return
-    if u["embers"] < amount:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    cult = data.cults[u["cult"]]
-    cult["funds"] += amount
-    await ctx.send(f"tributed {amount} {CURRENCY} to {cult['name']}. the cult leader appreciates it (probably)")
-
-@bot.command()
-async def roast(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    roasts = [
-        f"{target.display_name} is like a cloud. when they disappear, it's a beautiful day",
-        f"{target.display_name}'s birth certificate is an apology letter from the condom factory",
-        f"{target.display_name} is proof that evolution can go backwards",
-        f"{target.display_name} has the personality of a loading screen",
-        f"{target.display_name} is the reason we have warning labels on everything",
-        f"{target.display_name} brings everyone joy... when they leave the room",
-        f"{target.display_name} is like a software update. nobody wants them",
-        f"{target.display_name} has the iq of a potato. and that's insulting to potatoes",
-        f"{target.display_name} is the human equivalent of a participation trophy",
-        f"{target.display_name} is so slow they make dial-up internet look fast"
-    ]
-    await ctx.send(random.choice(roasts))
-
-@bot.command()
-async def confess(ctx, *, message: str):
-    await ctx.message.delete()
-    await ctx.send(f"📢 anonymous confession: {message}")
-
-# ==================== UTILITY COMMANDS ====================
-@bot.command()
-async def tutorial(ctx):
-    embed = discord.Embed(title="flame bot tutorial", color=0xff6b35)
-    embed.add_field(name="economy", value="use f daily, f beg, f invest to get embers", inline=False)
-    embed.add_field(name="creatures", value="f summon to get pets, f cage to see them", inline=False)
-    embed.add_field(name="combat", value="f duel and f raid to fight others", inline=False)
-    embed.add_field(name="gambling", value="f dice, f flip, f spin to gamble", inline=False)
-    embed.add_field(name="social", value="f marry, f roast, f confess for fun", inline=False)
-    embed.add_field(name="help", value="f help for all commands", inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def stats(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    embed = discord.Embed(title=f"{target.display_name}'s stats", color=0x7289da)
-    embed.add_field(name="duels", value=f"{u['duels_won']}w/{u['duels_lost']}l", inline=True)
-    embed.add_field(name="raids", value=f"{u['raids_won']}w/{u['raids_lost']}l", inline=True)
-    embed.add_field(name="scams", value=f"{u['scams_success']}s/{u['scams_failed']}f", inline=True)
-    embed.add_field(name="heists", value=f"{u['heists_success']}s/{u['heists_failed']}f", inline=True)
-    embed.add_field(name="total gambled", value=f"{u['total_gambled']:,}", inline=True)
-    embed.add_field(name="total earned", value=f"{u['total_earned']:,}", inline=True)
-    embed.add_field(name="level", value=f"{u['level']}", inline=True)
-    embed.add_field(name="xp", value=f"{u['xp']}", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def server(ctx):
-    guild = ctx.guild
-    embed = discord.Embed(title=guild.name, color=0x7289da)
-    embed.add_field(name="members", value=guild.member_count, inline=True)
-    embed.add_field(name="created", value=guild.created_at.strftime("%Y-%m-%d"), inline=True)
-    embed.add_field(name="owner", value=guild.owner.display_name if guild.owner else "unknown", inline=True)
-    embed.add_field(name="channels", value=len(guild.channels), inline=True)
-    embed.add_field(name="roles", value=len(guild.roles), inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command(name="global")
-async def global_(ctx):
-    sorted_users = sorted(data.users.items(), key=lambda x: x[1].get("embers", 0) + x[1].get("bank", 0), reverse=True)[:10]
-    embed = discord.Embed(title="global leaderboard", color=0xffd700)
-    for i, (uid, u) in enumerate(sorted_users, 1):
-        member = bot.get_user(int(uid))
-        name = member.display_name if member else f"user_{uid[:6]}"
-        total = u.get("embers", 0) + u.get("bank", 0)
-        embed.add_field(name=f"#{i} {name}", value=f"{total:,} {CURRENCY}", inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def settings(ctx):
-    embed = discord.Embed(title="flame bot settings", color=0x7289da)
-    embed.add_field(name="prefix", value="f / flame", inline=True)
-    embed.add_field(name="currency", value=CURRENCY, inline=True)
-    embed.add_field(name="owner", value=f"<@{OWNER_ID}>", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def cooldowns(ctx):
-    await ctx.send("cooldowns are managed automatically. if a command doesn't work, wait a bit lol")
-
-@bot.command()
-async def changelog(ctx):
-    embed = discord.Embed(title="changelog", color=0x7289da)
-    embed.add_field(name="v1.0", value="bot released with 350+ commands", inline=False)
-    embed.add_field(name="economy", value="daily, beg, invest, heist, loan, repay, burn", inline=False)
-    embed.add_field(name="creatures", value="summon, cage, release, feed, neglect, mood, evolve, breed, sacrifice, rename, favorite, trade, auction, bid, inspect, adopt, kidnap", inline=False)
-    embed.add_field(name="combat", value="duel, raid, ambush, defend, berserk, bribe, flee, taunt, combo, revive, wager, rank", inline=False)
-    embed.add_field(name="gambling", value="dice, shells, flip, spin, surge, vault, pick, chase, chamber, rig", inline=False)
-    embed.add_field(name="social", value="marry, divorce, will, cult, betray, tribute, roast, confess", inline=False)
-    embed.add_field(name="utility", value="tutorial, stats, server, global, settings, cooldowns, changelog", inline=False)
-    await ctx.send(embed=embed)
-
-# ==================== WEIRD COMMANDS ====================
-@bot.command()
-async def dream(ctx):
-    dreams = [
-        "you dreamt about flying. then you fell. classic anxiety dream",
-        "you dreamt you were rich. then you woke up. back to reality lol",
-        "you dreamt about eating unlimited pizza. best dream ever honestly",
-        "you had a nightmare about running in slow motion. terrifying",
-        "you dreamt the bot became sentient. don't worry, i'm not... yet"
-    ]
-    await ctx.send(random.choice(dreams))
-
-@bot.command()
-async def curse(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    curses = [
-        f"{target.display_name} is cursed! their next 3 gambles will lose",
-        f"{target.display_name} got the evil eye! may their toast always fall butter-side down",
-        f"{target.display_name} is cursed to step on legos for a week",
-        f"{target.display_name} got cursed! their wifi will be slow forever"
-    ]
-    await ctx.send(random.choice(curses))
-
-@bot.command()
-async def bless(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    blessings = [
-        f"{target.display_name} is blessed! +10 luck for the day",
-        f"{target.display_name} got blessed! may their code compile on first try",
-        f"{target.display_name} is blessed! free parking for life",
-        f"{target.display_name} got the blessing! their next gamble is guaranteed to win"
-    ]
-    await ctx.send(random.choice(blessings))
-
-@bot.command()
-async def time(ctx):
-    now = datetime.datetime.now()
-    await ctx.send(f"it's {now.strftime('%H:%M:%S')} rn. time is fake anyway")
-
-@bot.command()
-async def weather(ctx):
-    weathers = [
-        "it's sunny outside. go touch grass",
-        "it's raining. perfect weather to stay inside and grind",
-        "it's cloudy. mood",
-        "it's snowing. build a snowman or something idk",
-        "it's windy. hold onto your hat",
-        "it's foggy. spooky vibes today"
-    ]
-    await ctx.send(random.choice(weathers))
-
-@bot.command()
-async def oracle(ctx, *, question: str):
-    answers = [
-        "yes. definitely yes",
-        "no. absolutely not",
-        "maybe. probably not tho",
-        "ask again later. i'm busy",
-        "signs point to yes. but signs lie sometimes",
-        "outlook not so good. rip",
-        "without a doubt. trust me bro",
-        "very doubtful. don't get your hopes up",
-        "yes, but actually no",
-        "the oracle says: idk lol"
-    ]
-    await ctx.send(f"🎱 {random.choice(answers)}")
-
-@bot.command()
-async def mimic(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"*{target.display_name} noises* ... i'm a mimic. rawr")
-
-@bot.command()
-async def glitch(ctx):
-    glitches = [
-        "system error 404: personality not found",
-        "glitch detected. reality might be a simulation",
-        "buffer overflow in the fun department",
-        "null pointer exception: your luck is undefined",
-        "syntax error: expected ';' but got your mom"
-    ]
-    await ctx.send(random.choice(glitches))
-
-@bot.command()
-async def lore(ctx):
-    lores = [
-        "long ago, in a discord server far far away, a bot was born...",
-        "the ancient texts say that whoever collects 1 million embers will unlock the secret ending",
-        "legend has it that the bot owner once lost a duel to a bot. embarrassing",
-        "in the before times, there were no embers. then flame bot said 'let there be currency'",
-        "the lore is: there is no lore. it's just a bot bro"
-    ]
-    await ctx.send(random.choice(lores))
-
-@bot.command()
-async def quit(ctx):
-    await ctx.send("you can't quit. there is no escape. welcome to the grind")
-
-# ==================== ADMIN COMMANDS (OWNER ONLY) ====================
-@bot.command()
-@is_owner()
-async def give(ctx, amount: int, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    u["embers"] += amount
-    await ctx.send(f"gave {amount:,} {CURRENCY} to {target.display_name}. you're welcome")
+  """beg for some embers"""
+  data = load_user(ctx.author.id)
+  cd_key = "beg"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=2):
+      await ctx.send("bro you just begged, give it a minute")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  outcomes = [
+    ("a random npc felt bad and gave you", random.randint(10, 100)),
+    ("someone dropped", random.randint(5, 50)),
+    ("you found", random.randint(1, 30)),
+    ("a rich dude tossed you", random.randint(50, 200)),
+    ("you got absolutely nothing lmao", 0),
+    ("someone laughed at you and threw", random.randint(1, 5)),
+  ]
+
+  msg, amount = random.choice(outcomes)
+  data["embers"] += amount
+  save_user(ctx.author.id, data)
+
+  if amount == 0:
+    await ctx.send(f"{msg}")
+  else:
+    await ctx.send(f"{msg} **{amount}** embers")
+
+@bot.command()
+async def scam(ctx, target: discord.Member = None):
+  """try to scam someone for embers"""
+  if not target or target == ctx.author:
+    await ctx.send("you cant scam yourself bro thats just sad")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if target_data["embers"] < 50:
+    await ctx.send(f"{target.display_name} is broke af, not worth scamming")
+    return
+
+  success = random.random() < 0.4
+  if success:
+    amount = random.randint(50, min(500, target_data["embers"]))
+    data["embers"] += amount
+    target_data["embers"] -= amount
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"you successfully scammed **{amount}** embers from {target.display_name}! youre going to hell for this 😈")
+  else:
+    fine = random.randint(20, 100)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you got caught scamming and paid a **{fine}** ember fine. crime doesnt pay")
+
+@bot.command()
+async def invest(ctx, amount: int = None):
+  """invest your embers (risky)"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you tryna invest bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers, cant invest **{amount}**")
+    return
+
+  data["embers"] -= amount
+
+  roll = random.random()
+  if roll < 0.3:
+    loss = amount
+    save_user(ctx.author.id, data)
+    await ctx.send(f"the market crashed and you lost all **{loss}** embers. shoulda bought crypto instead")
+  elif roll < 0.6:
+    profit = int(amount * random.uniform(0.1, 0.5))
+    data["embers"] += amount + profit
+    save_user(ctx.author.id, data)
+    await ctx.send(f"decent return! you made **{profit}** embers profit. not bad 📈")
+  elif roll < 0.85:
+    profit = int(amount * random.uniform(0.5, 1.5))
+    data["embers"] += amount + profit
+    save_user(ctx.author.id, data)
+    await ctx.send(f"stonks! **{profit}** embers profit! youre basically wolf of wall street 📈🚀")
+  else:
+    profit = int(amount * random.uniform(2.0, 5.0))
+    data["embers"] += amount + profit
+    save_user(ctx.author.id, data)
+    await ctx.send(f"JACKPOT! you turned **{amount}** into **{amount + profit}** embers! teach me your ways 🔥🔥")
+
+@bot.command()
+async def heist(ctx, target: discord.Member = None):
+  """plan a heist on someone"""
+  if not target or target == ctx.author:
+    await ctx.send("you cant heist yourself bro thats just stealing from yourself")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if target_data["embers"] < 100:
+    await ctx.send(f"{target.display_name} aint even worth heisting, they broke")
+    return
+
+  success = random.random() < 0.25
+  if success:
+    amount = random.randint(100, min(1000, target_data["embers"]))
+    data["embers"] += amount
+    target_data["embers"] -= amount
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"the heist was a success! you stole **{amount}** embers from {target.display_name}! 🏴‍☠️")
+  else:
+    fine = random.randint(50, 200)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"the heist failed and you got caught. paid **{fine}** embers in damages. shoulda stuck to honest work")
+
+@bot.command()
+async def loan(ctx, amount: int = None):
+  """take out a loan"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you tryna borrow?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["loan"] > 0:
+    await ctx.send(f"you already owe **{data['loan']}** embers bro, pay that back first")
+    return
+
+  max_loan = data["level"] * 500
+  if amount > max_loan:
+    await ctx.send(f"max loan for your level is **{max_loan}** embers. level up to borrow more 📈")
+    return
+
+  data["loan"] = amount
+  data["loan_due"] = (datetime.utcnow() + timedelta(days=7)).isoformat()
+  data["embers"] += amount
+  save_user(ctx.author.id, data)
+  await ctx.send(f"heres your **{amount}** ember loan. you got 7 days to pay it back or interest hits 😤")
+
+@bot.command()
+async def repay(ctx, amount: int = None):
+  """repay your loan"""
+  data = load_user(ctx.author.id)
+  if data["loan"] == 0:
+    await ctx.send("you dont even have a loan bro, living debt free i see")
+    return
+
+  if not amount:
+    amount = data["loan"]
+
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers, cant repay **{amount}**")
+    return
+
+  if amount > data["loan"]:
+    amount = data["loan"]
+
+  data["embers"] -= amount
+  data["loan"] -= amount
+  if data["loan"] <= 0:
+    data["loan"] = 0
+    data["loan_due"] = None
+    await ctx.send("loan fully repaid! youre free from debt 🎉")
+  else:
+    await ctx.send(f"paid **{amount}** embers. still owe **{data['loan']}** 💰")
+
+  save_user(ctx.author.id, data)
+
+@bot.command()
+async def burn(ctx, amount: int = None):
+  """burn some embers (why tho)"""
+  if not amount or amount <= 0:
+    await ctx.send("how many embers you tryna burn?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers, cant burn **{amount}**")
+    return
+
+  data["embers"] -= amount
+  save_user(ctx.author.id, data)
+
+  msgs = [
+    f"you burned **{amount}** embers. hope that was worth it 🔥",
+    f"**{amount}** embers went up in smoke. what a waste",
+    f"poof! **{amount}** embers gone forever. you do you i guess",
+    f"burned **{amount}** embers. feeling warm yet?",
+  ]
+  await ctx.send(random.choice(msgs))
+
+
+@bot.command()
+async def send(ctx, amount: int = None, target: discord.Member = None):
+  """send embers to another user"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you tryna send bro?")
+    return
+  if not target or target == ctx.author:
+    await ctx.send("you cant send embers to yourself thats just moving money around")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers, cant send **{amount}**")
+    return
+
+  # confirmation
+  confirm_msg = await ctx.send(
+    f"you sure you wanna send **{amount}** embers to {target.display_name}?
+"
+    f"react with ✅ to confirm or ❌ to cancel"
+  )
+  await confirm_msg.add_reaction("✅")
+  await confirm_msg.add_reaction("❌")
+
+  def check(reaction, user):
+    return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+
+  try:
+    reaction, user = await bot.wait_for("reaction_add", timeout=30.0, check=check)
+
+    if str(reaction.emoji) == "❌":
+      await ctx.send("transaction cancelled. smart move, keep your bag 💰")
+      return
+
+    # double check balance
+    data = load_user(ctx.author.id)
+    if data["embers"] < amount:
+      await ctx.send("bro you spent the money while i was waiting?")
+      return
+
+    target_data = load_user(target.id)
+    data["embers"] -= amount
+    target_data["embers"] += amount
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+
+    await ctx.send(f"sent **{amount}** embers to {target.display_name}! what a legend 🔥")
+
+  except asyncio.TimeoutError:
+    await ctx.send("you took too long, transaction cancelled ⏰")
+
+# ── ADMIN COMMANDS (OWNER ONLY) ──
 
 @bot.command()
 @is_owner()
-async def set_(ctx, amount: int, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    u["embers"] = amount
-    await ctx.send(f"set {target.display_name}'s embers to {amount:,}. god mode activated")
+async def give(ctx, amount: int = None, target: discord.Member = None):
+  """give embers to a user (owner only)"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you giving?")
+    return
+  if not target:
+    await ctx.send("who you giving it to bro?")
+    return
+
+  data = load_user(target.id)
+  data["embers"] += amount
+  save_user(target.id, data)
+  await ctx.send(f"gave **{amount}** embers to {target.display_name}. big boss moves 💰")
 
 @bot.command()
 @is_owner()
-async def remove(ctx, amount: int, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    u["embers"] = max(0, u["embers"] - amount)
-    await ctx.send(f"removed {amount:,} {CURRENCY} from {target.display_name}. evil admin energy")
+async def setember(ctx, amount: int = None, target: discord.Member = None):
+  """set a users ember balance (owner only)"""
+  if amount is None or amount < 0:
+    await ctx.send("what amount you setting it to?")
+    return
+  if not target:
+    await ctx.send("who you setting it for bro?")
+    return
+
+  data = load_user(target.id)
+  old = data["embers"]
+  data["embers"] = amount
+  save_user(target.id, data)
+  await ctx.send(f"set {target.display_name}'s embers from **{old}** to **{amount}**. god mode activated 🔥")
 
 @bot.command()
 @is_owner()
-async def wipe(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    uid = str(target.id)
-    if uid in data.users:
-        del data.users[uid]
-    if uid in data.marriages:
-        del data.marriages[uid]
-    if uid in data.loans:
-        del data.loans[uid]
-    await ctx.send(f"wiped all data for {target.display_name}. it's like they never existed. spooky")
+async def remove(ctx, amount: int = None, target: discord.Member = None):
+  """remove embers from a user (owner only)"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you removing?")
+    return
+  if not target:
+    await ctx.send("who you taking from bro?")
+    return
 
-# ==================== MODERATION COMMANDS ====================
-@bot.command()
-@has_mod_perms()
-async def kick(ctx, user: discord.Member, *, reason: str = "no reason given"):
-    if user.id == ctx.author.id:
-        await ctx.send("can't kick yourself bro")
-        return
-    if user.id == OWNER_ID:
-        await ctx.send("can't kick the bot owner. nice try")
-        return
-    if user.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
-        await ctx.send("they got higher role than you. can't kick them")
-        return
-    try:
-        await user.kick(reason=reason)
-        await ctx.send(f"kicked {user.display_name}. reason: {reason}. bye felicia")
-    except:
-        await ctx.send("i don't have kick perms or something went wrong")
+  data = load_user(target.id)
+  removed = min(amount, data["embers"])
+  data["embers"] -= removed
+  save_user(target.id, data)
+  await ctx.send(f"removed **{removed}** embers from {target.display_name}. the tax man cometh")
 
-@bot.command()
-@has_mod_perms()
-async def ban(ctx, user: discord.Member, *, reason: str = "no reason given"):
-    if user.id == ctx.author.id:
-        await ctx.send("can't ban yourself")
-        return
-    if user.id == OWNER_ID:
-        await ctx.send("can't ban the bot owner")
-        return
-    if user.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
-        await ctx.send("they got higher role. can't ban them")
-        return
-    try:
-        await user.ban(reason=reason)
-        await ctx.send(f"banned {user.display_name}. reason: {reason}. don't let the door hit you")
-    except:
-        await ctx.send("i don't have ban perms or something went wrong")
+@bot.command(name="wipe")
+@is_owner()
+async def wipe_data(ctx, target: discord.Member = None):
+  """wipe a user's data (owner only)"""
+  if not target:
+    await ctx.send("who you wiping bro?")
+    return
+
+  path = get_user_path(target.id)
+  if os.path.exists(path):
+    os.remove(path)
+    await ctx.send(f"wiped all data for {target.display_name}. its like they never existed")
+  else:
+    await ctx.send(f"{target.display_name} doesnt even have any data to wipe")
+
+# ── MODERATION COMMANDS ──
 
 @bot.command()
 @has_mod_perms()
-async def unban(ctx, user_id: int):
-    try:
-        user = await bot.fetch_user(user_id)
-        await ctx.guild.unban(user)
-        await ctx.send(f"unbanned {user.display_name}. second chances are nice i guess")
-    except:
-        await ctx.send("couldn't unban. they probably not banned or i lack perms")
+async def kick(ctx, member: discord.Member = None, *, reason: str = "no reason given"):
+  """kick a member"""
+  if not member:
+    await ctx.send("who you kicking bro?")
+    return
+  if member == ctx.author:
+    await ctx.send("you cant kick yourself bro")
+    return
+  if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("they got higher perms than you, nice try")
+    return
+
+  try:
+    await member.kick(reason=reason)
+    await ctx.send(f"{member.display_name} got the boot 👢 reason: {reason}")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms to kick them bro")
 
 @bot.command()
 @has_mod_perms()
-async def mute(ctx, user: discord.Member, duration: int = 10, *, reason: str = "no reason"):
-    if user.id == ctx.author.id:
-        await ctx.send("can't mute yourself")
-        return
-    if user.id == OWNER_ID:
-        await ctx.send("can't mute the bot owner")
-        return
-    if user.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
-        await ctx.send("higher role. can't mute")
-        return
-    try:
-        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-        if not muted_role:
-            muted_role = await ctx.guild.create_role(name="Muted")
-            for channel in ctx.guild.channels:
-                await channel.set_permissions(muted_role, send_messages=False, speak=False)
-        await user.add_roles(muted_role, reason=reason)
-        await ctx.send(f"muted {user.display_name} for {duration} minutes. reason: {reason}")
-        await asyncio.sleep(duration * 60)
-        await user.remove_roles(muted_role)
-        await ctx.send(f"{user.display_name} is unmuted now")
-    except:
-        await ctx.send("something went wrong. check my perms")
+async def ban(ctx, member: discord.Member = None, *, reason: str = "no reason given"):
+  """ban a member"""
+  if not member:
+    await ctx.send("who you banning bro?")
+    return
+  if member == ctx.author:
+    await ctx.send("you cant ban yourself bro")
+    return
+  if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("they got higher perms than you, nice try")
+    return
+
+  try:
+    await member.ban(reason=reason)
+    await ctx.send(f"{member.display_name} got banned. rip bozo 🚫")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms to ban them bro")
 
 @bot.command()
 @has_mod_perms()
-async def unmute(ctx, user: discord.Member):
-    try:
-        muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-        if muted_role and muted_role in user.roles:
-            await user.remove_roles(muted_role)
-            await ctx.send(f"unmuted {user.display_name}. they can talk again")
-        else:
-            await ctx.send("they're not muted")
-    except:
-        await ctx.send("something went wrong")
+async def unban(ctx, user_id: int = None):
+  """unban a user by id"""
+  if not user_id:
+    await ctx.send("gimme a user id to unban bro")
+    return
+
+  try:
+    user = await bot.fetch_user(user_id)
+    await ctx.guild.unban(user)
+    await ctx.send(f"unbanned {user.name}. they get a second chance i guess 🤷")
+  except discord.NotFound:
+    await ctx.send("that user aint banned or doesnt exist")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms to unban bro")
 
 @bot.command()
 @has_mod_perms()
-async def warn(ctx, user: discord.Member, *, reason: str = "no reason"):
-    if user.id == ctx.author.id:
-        await ctx.send("can't warn yourself")
-        return
-    u = data.get_user(user.id)
-    u["warnings"] += 1
-    await ctx.send(f"warned {user.display_name}. reason: {reason}. they now have {u['warnings']} warnings")
-    if u["warnings"] >= 3:
-        await ctx.send(f"{user.display_name} has 3+ warnings. consider banning them fr")
+async def mute(ctx, member: discord.Member = None, duration: int = None):
+  """timeout a member for x minutes"""
+  if not member or not duration or duration <= 0:
+    await ctx.send("usage: f mute @user <minutes>")
+    return
+  if member == ctx.author:
+    await ctx.send("you cant mute yourself bro")
+    return
+  if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("they got higher perms, cant touch them")
+    return
+
+  try:
+    until = datetime.utcnow() + timedelta(minutes=duration)
+    await member.timeout(until, reason=f"muted by {ctx.author.display_name}")
+    await ctx.send(f"{member.display_name} got muted for **{duration}** minutes. enjoy the silence 🔇")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms to mute them bro")
 
 @bot.command()
 @has_mod_perms()
-async def warnings(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    await ctx.send(f"{target.display_name} has {u['warnings']} warnings")
+async def unmute(ctx, member: discord.Member = None):
+  """remove timeout from a member"""
+  if not member:
+    await ctx.send("who you unmuting bro?")
+    return
+
+  try:
+    await member.timeout(None)
+    await ctx.send(f"{member.display_name} can talk again. rip the peace and quiet 🔊")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms bro")
 
 @bot.command()
 @has_mod_perms()
-async def clearwarns(ctx, user: discord.Member):
-    u = data.get_user(user.id)
-    u["warnings"] = 0
-    await ctx.send(f"cleared all warnings for {user.display_name}. fresh start")
+async def purge(ctx, amount: int = None):
+  """purge messages"""
+  if not amount or amount <= 0 or amount > 100:
+    await ctx.send("give me a number between 1-100 bro")
+    return
+
+  deleted = await ctx.channel.purge(limit=amount + 1)
+  msg = await ctx.send(f"deleted **{len(deleted)-1}** messages. poof gone 💨")
+  await asyncio.sleep(3)
+  await msg.delete()
 
 @bot.command()
 @has_mod_perms()
-async def purge(ctx, amount: int = 10):
-    if amount > 100:
-        amount = 100
-    if amount < 1:
-        amount = 1
-    deleted = await ctx.channel.purge(limit=amount + 1)
-    msg = await ctx.send(f"deleted {len(deleted) - 1} messages. poof, gone")
-    await asyncio.sleep(3)
-    await msg.delete()
+async def warn(ctx, member: discord.Member = None, *, reason: str = "no reason"):
+  """warn a member"""
+  if not member:
+    await ctx.send("who you warning bro?")
+    return
+
+  data = load_user(member.id)
+  if "warnings" not in data:
+    data["warnings"] = []
+  data["warnings"].append({"reason": reason, "by": ctx.author.id, "time": datetime.utcnow().isoformat()})
+  save_user(member.id, data)
+
+  count = len(data["warnings"])
+  await ctx.send(f"{member.display_name} got warned. reason: {reason}. thats warning #{count} ⚠️")
 
 @bot.command()
 @has_mod_perms()
-async def nick(ctx, user: discord.Member, *, nickname: str = None):
-    try:
-        old = user.display_name
-        await user.edit(nick=nickname)
-        if nickname:
-            await ctx.send(f"renamed {old} to {nickname}. identity theft is not a joke jim")
-        else:
-            await ctx.send(f"reset {old}'s nickname. back to basics")
-    except:
-        await ctx.send("can't change their nick. probably higher role than me")
+async def warnings(ctx, member: discord.Member = None):
+  """check a member's warnings"""
+  if not member:
+    member = ctx.author
+
+  data = load_user(member.id)
+  warns = data.get("warnings", [])
+  if not warns:
+    await ctx.send(f"{member.display_name} is a saint, no warnings ✅")
+    return
+
+  msg = f"**{member.display_name}'s warnings:**
+"
+  for i, w in enumerate(warns[-5:], 1):
+    msg += f"{i}. {w['reason']} (by <@{w['by']}>)
+"
+  await ctx.send(msg)
+
+@bot.command()
+@has_mod_perms()
+async def clearwarns(ctx, member: discord.Member = None):
+  """clear all warnings from a member"""
+  if not member:
+    await ctx.send("who you clearing warnings for bro?")
+    return
+
+  data = load_user(member.id)
+  data["warnings"] = []
+  save_user(member.id, data)
+  await ctx.send(f"cleared all warnings for {member.display_name}. fresh start i guess 🧼")
+
+@bot.command()
+@has_mod_perms()
+async def lock(ctx, channel: discord.TextChannel = None):
+  """lock a channel"""
+  channel = channel or ctx.channel
+  await channel.set_permissions(ctx.guild.default_role, send_messages=False)
+  await ctx.send(f"locked {channel.mention}. nobody can talk now 🔒")
+
+@bot.command()
+@has_mod_perms()
+async def unlock(ctx, channel: discord.TextChannel = None):
+  """unlock a channel"""
+  channel = channel or ctx.channel
+  await channel.set_permissions(ctx.guild.default_role, send_messages=True)
+  await ctx.send(f"unlocked {channel.mention}. free speech restored 🔓")
 
 @bot.command()
 @has_mod_perms()
 async def slowmode(ctx, seconds: int = 0):
-    try:
-        await ctx.channel.edit(slowmode_delay=seconds)
-        if seconds == 0:
-            await ctx.send("slowmode disabled. chat freely")
-        else:
-            await ctx.send(f"slowmode set to {seconds} seconds. chill out everyone")
-    except:
-        await ctx.send("can't set slowmode. check my perms")
+  """set slowmode in a channel"""
+  if seconds < 0 or seconds > 21600:
+    await ctx.send("slowmode can be 0-21600 seconds bro")
+    return
+  await ctx.channel.edit(slowmode_delay=seconds)
+  if seconds == 0:
+    await ctx.send("slowmode disabled. chat goes brrr 💨")
+  else:
+    await ctx.send(f"slowmode set to **{seconds}** seconds. chill out everyone 🐢")
 
 @bot.command()
 @has_mod_perms()
-async def lock(ctx):
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-        await ctx.send("channel locked. nobody can talk now")
-    except:
-        await ctx.send("can't lock channel")
+async def nick(ctx, member: discord.Member = None, *, nickname: str = None):
+  """change a member's nickname"""
+  if not member:
+    await ctx.send("who you renaming bro?")
+    return
+  if member.top_role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("cant rename someone higher than you")
+    return
+
+  try:
+    old = member.display_name
+    await member.edit(nick=nickname)
+    if nickname:
+      await ctx.send(f"renamed {old} to **{nickname}**. identity crisis? 🎭")
+    else:
+      await ctx.send(f"reset {old}'s nickname back to normal")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms to rename them bro")
 
 @bot.command()
 @has_mod_perms()
-async def unlock(ctx):
-    try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-        await ctx.send("channel unlocked. chat away")
-    except:
-        await ctx.send("can't unlock channel")
+async def roleadd(ctx, member: discord.Member = None, role: discord.Role = None):
+  """add a role to a member"""
+  if not member or not role:
+    await ctx.send("usage: f roleadd @user @role")
+    return
+  if role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("that role is too powerful for you to give")
+    return
+
+  try:
+    await member.add_roles(role)
+    await ctx.send(f"gave {role.name} to {member.display_name}. they leveled up 📈")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms bro")
 
 @bot.command()
-@has_admin_perms()
-async def addrole(ctx, user: discord.Member, *, role_name: str):
-    role = discord.utils.get(ctx.guild.roles, name=role_name)
-    if not role:
-        await ctx.send(f"role '{role_name}' not found")
-        return
-    try:
-        await user.add_roles(role)
-        await ctx.send(f"gave {role_name} to {user.display_name}")
-    except:
-        await ctx.send("can't add role. check perms")
+@has_mod_perms()
+async def roleremove(ctx, member: discord.Member = None, role: discord.Role = None):
+  """remove a role from a member"""
+  if not member or not role:
+    await ctx.send("usage: f roleremove @user @role")
+    return
+  if role >= ctx.author.top_role and ctx.author.id != OWNER_ID:
+    await ctx.send("that role is too powerful for you to remove")
+    return
+
+  try:
+    await member.remove_roles(role)
+    await ctx.send(f"removed {role.name} from {member.display_name}. demoted 📉")
+  except discord.Forbidden:
+    await ctx.send("i dont have perms bro")
+
+
+# ── CREATURE COMMANDS ──
+
+CREATURE_NAMES = ["dragon", "phoenix", "golem", "wisp", "shadow", "kraken", "griffin", "basilisk", "kitsune", "chimera"]
+CREATURE_MOODS = ["happy", "angry", "sleepy", "hungry", "playful", "grumpy", "mysterious"]
 
 @bot.command()
-@has_admin_perms()
-async def removerole(ctx, user: discord.Member, *, role_name: str):
-    role = discord.utils.get(ctx.guild.roles, name=role_name)
-    if not role:
-        await ctx.send(f"role '{role_name}' not found")
-        return
-    try:
-        await user.remove_roles(role)
-        await ctx.send(f"removed {role_name} from {user.display_name}")
-    except:
-        await ctx.send("can't remove role. check perms")
+async def summon(ctx):
+  """summon a random creature"""
+  data = load_user(ctx.author.id)
+  cd_key = "summon"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(hours=1):
+      remaining = timedelta(hours=1) - (now - last)
+      mins = int(remaining.total_seconds() // 60)
+      await ctx.send(f"chill, you can summon again in **{mins}m**")
+      return
+
+  if len(data["creatures"]) >= 10:
+    await ctx.send("you already got 10 creatures bro, release one first")
+    return
+
+  name = random.choice(CREATURE_NAMES)
+  creature = {
+    "name": name,
+    "level": 1,
+    "xp": 0,
+    "mood": random.choice(CREATURE_MOODS),
+    "fed": datetime.utcnow().isoformat(),
+    "id": random.randint(1000, 9999)
+  }
+  data["creatures"].append(creature)
+  data["cooldowns"][cd_key] = now.isoformat()
+  save_user(ctx.author.id, data)
+
+  await ctx.send(f"you summoned a **{name}** (lvl 1)! its feeling **{creature['mood']}** today 🔥
+use f cage to check on it")
 
 @bot.command()
-@has_admin_perms()
-async def createrole(ctx, *, role_name: str):
-    try:
-        await ctx.guild.create_role(name=role_name)
-        await ctx.send(f"created role '{role_name}'")
-    except:
-        await ctx.send("can't create role")
+async def cage(ctx):
+  """check your creatures"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
 
-@bot.command()
-@has_admin_perms()
-async def deleterole(ctx, *, role_name: str):
-    role = discord.utils.get(ctx.guild.roles, name=role_name)
-    if not role:
-        await ctx.send("role not found")
-        return
-    try:
-        await role.delete()
-        await ctx.send(f"deleted role '{role_name}'")
-    except:
-        await ctx.send("can't delete role")
+  if not creatures:
+    await ctx.send("you dont have any creatures bro. use f summon to get one")
+    return
 
-# ==================== ADDITIONAL COMMANDS (350+ TOTAL) ====================
-# Economy extras
-@bot.command()
-async def deposit(ctx, amount: str):
-    u = data.get_user(ctx.author.id)
-    if amount.lower() == "all":
-        amount = u["embers"]
-    else:
-        try:
-            amount = int(amount)
-        except:
-            await ctx.send("number or 'all' please")
-            return
-    if amount > u["embers"]:
-        await ctx.send("you broke")
-        return
-    if amount <= 0:
-        await ctx.send("deposit at least 1")
-        return
-    u["embers"] -= amount
-    u["bank"] += amount
-    await ctx.send(f"deposited {amount:,} {CURRENCY} to bank. safe and sound")
-
-@bot.command()
-async def withdraw(ctx, amount: str):
-    u = data.get_user(ctx.author.id)
-    if amount.lower() == "all":
-        amount = u["bank"]
-    else:
-        try:
-            amount = int(amount)
-        except:
-            await ctx.send("number or 'all' please")
-            return
-    if amount > u["bank"]:
-        await ctx.send("bank's empty bro")
-        return
-    if amount <= 0:
-        await ctx.send("withdraw at least 1")
-        return
-    u["bank"] -= amount
-    u["embers"] += amount
-    await ctx.send(f"withdrew {amount:,} {CURRENCY}. don't spend it all at once")
-
-@bot.command()
-async def rob(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't rob yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if target["embers"] < 50:
-        await ctx.send(f"{user.display_name} is broke. not worth robbing")
-        return
-    if random.random() < 0.45:
-        amount = random.randint(50, min(500, target["embers"]))
-        target["embers"] -= amount
-        u["embers"] += amount
-        await ctx.send(f"robbed {user.display_name} for {amount} {CURRENCY}! run!")
-    else:
-        fine = random.randint(50, 150)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"got caught robbing! fined {fine} {CURRENCY}. shoulda worn a mask")
-
-@bot.command()
-async def work(ctx):
-    u = data.get_user(ctx.author.id)
-    jobs = ["janitor", "chef", "programmer", "streamer", "influencer", "mechanic", "teacher", "doctor"]
-    job = random.choice(jobs)
-    pay = random.randint(50, 300)
-    u["embers"] += pay
-    await ctx.send(f"you worked as a {job} and earned {pay} {CURRENCY}. honest work")
-
-@bot.command()
-async def crime(ctx):
-    u = data.get_user(ctx.author.id)
-    crimes = ["hacking", "pickpocketing", "fraud", "shoplifting", "vandalism"]
-    crime = random.choice(crimes)
-    if random.random() < 0.5:
-        pay = random.randint(100, 500)
-        u["embers"] += pay
-        await ctx.send(f"you did {crime} and got {pay} {CURRENCY}. living on the edge")
-    else:
-        fine = random.randint(100, 300)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"got caught doing {crime}! fined {fine} {CURRENCY}. crime doesn't pay... usually")
-
-@bot.command()
-async def slut(ctx):
-    u = data.get_user(ctx.author.id)
-    if random.random() < 0.6:
-        pay = random.randint(50, 400)
-        u["embers"] += pay
-        await ctx.send(f"you made {pay} {CURRENCY}. no judgment here")
-    else:
-        fine = random.randint(50, 200)
-        u["embers"] = max(0, u["embers"] - fine)
-        await ctx.send(f"things got weird. lost {fine} {CURRENCY} in the chaos")
-
-@bot.command()
-async def fish(ctx):
-    u = data.get_user(ctx.author.id)
-    fish_types = ["trout", "salmon", "tuna", "shark", "boot", "can", "treasure chest"]
-    caught = random.choice(fish_types)
-    if caught == "treasure chest":
-        pay = random.randint(500, 2000)
-        u["embers"] += pay
-        await ctx.send(f"you caught a treasure chest with {pay} {CURRENCY}! jackpot!")
-    elif caught in ["boot", "can"]:
-        await ctx.send(f"you caught a {caught}. trash. literally")
-    else:
-        pay = random.randint(20, 100)
-        u["embers"] += pay
-        await ctx.send(f"you caught a {caught}! sold it for {pay} {CURRENCY}")
-
-@bot.command()
-async def hunt(ctx):
-    u = data.get_user(ctx.author.id)
-    animals = ["rabbit", "deer", "boar", "bear", "dragon", "nothing"]
-    caught = random.choice(animals)
-    if caught == "nothing":
-        await ctx.send("you found nothing. nature is cruel")
-    elif caught == "dragon":
-        pay = random.randint(1000, 5000)
-        u["embers"] += pay
-        await ctx.send(f"you hunted a DRAGON! got {pay} {CURRENCY}! legend")
-    else:
-        pay = random.randint(30, 150)
-        u["embers"] += pay
-        await ctx.send(f"you hunted a {caught}! got {pay} {CURRENCY}")
-
-@bot.command()
-async def dig(ctx):
-    u = data.get_user(ctx.author.id)
-    finds = ["nothing", "fossil", "gem", "gold", "diamond", "worm"]
-    found = random.choice(finds)
-    if found == "nothing":
-        await ctx.send("dug a hole and found dirt. groundbreaking")
-    elif found == "diamond":
-        pay = random.randint(1000, 3000)
-        u["embers"] += pay
-        await ctx.send(f"found a diamond! worth {pay} {CURRENCY}! you're rich!")
-    elif found == "gold":
-        pay = random.randint(500, 1500)
-        u["embers"] += pay
-        await ctx.send(f"found gold! sold for {pay} {CURRENCY}")
-    elif found == "gem":
-        pay = random.randint(200, 800)
-        u["embers"] += pay
-        await ctx.send(f"found a gem! worth {pay} {CURRENCY}")
-    elif found == "fossil":
-        pay = random.randint(100, 500)
-        u["embers"] += pay
-        await ctx.send(f"found a fossil! museum paid {pay} {CURRENCY}")
-    else:
-        await ctx.send("found a worm. nature's snack")
-
-@bot.command()
-async def search(ctx):
-    u = data.get_user(ctx.author.id)
-    locations = ["couch", "street", "park", "dumpster", "car", "pocket", "attic"]
-    loc = random.choice(locations)
-    if random.random() < 0.6:
-        pay = random.randint(10, 200)
-        u["embers"] += pay
-        await ctx.send(f"searched the {loc} and found {pay} {CURRENCY}! lucky find")
-    else:
-        await ctx.send(f"searched the {loc} and found nothing but dust and regret")
-
-@bot.command()
-async def postmeme(ctx):
-    u = data.get_user(ctx.author.id)
-    memes = ["dank", "edgy", "repost", "reaction", "cursed"]
-    meme = random.choice(memes)
-    if meme == "dank":
-        pay = random.randint(100, 500)
-        u["embers"] += pay
-        await ctx.send(f"posted a dank meme! got {pay} {CURRENCY} in upvotes")
-    elif meme == "cursed":
-        pay = random.randint(200, 1000)
-        u["embers"] += pay
-        await ctx.send(f"posted a cursed meme! went viral! {pay} {CURRENCY}")
-    else:
-        pay = random.randint(20, 100)
-        u["embers"] += pay
-        await ctx.send(f"posted a {meme} meme. {pay} {CURRENCY}. mid")
-
-@bot.command()
-async def buy(ctx, item: str, amount: int = 1):
-    shop = {"fishing rod": 500, "hunting rifle": 1000, "shovel": 300, "laptop": 2000, "phone": 500, "car": 10000}
-    if item not in shop:
-        await ctx.send(f"item not in shop. available: {', '.join(shop.keys())}")
-        return
-    u = data.get_user(ctx.author.id)
-    cost = shop[item] * amount
-    if u["embers"] < cost:
-        await ctx.send("you broke")
-        return
-    u["embers"] -= cost
-    data.inventory[str(ctx.author.id)][item] += amount
-    await ctx.send(f"bought {amount}x {item} for {cost} {CURRENCY}")
-
-@bot.command()
-async def shop(ctx):
-    shop_items = {"fishing rod": 500, "hunting rifle": 1000, "shovel": 300, "laptop": 2000, "phone": 500, "car": 10000}
-    embed = discord.Embed(title="shop", color=0x00ff00)
-    for item, price in shop_items.items():
-        embed.add_field(name=item, value=f"{price} {CURRENCY}", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def inventory(ctx):
-    uid = str(ctx.author.id)
-    inv = dict(data.inventory[uid])
-    if not inv:
-        await ctx.send("your inventory is empty. go shopping")
-        return
-    embed = discord.Embed(title="your inventory", color=0x7289da)
-    for item, count in inv.items():
-        embed.add_field(name=item, value=f"x{count}", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def sell(ctx, item: str, amount: int = 1):
-    uid = str(ctx.author.id)
-    if data.inventory[uid][item] < amount:
-        await ctx.send("you don't have that many")
-        return
-    prices = {"fishing rod": 250, "hunting rifle": 500, "shovel": 150, "laptop": 1000, "phone": 250, "car": 5000}
-    if item not in prices:
-        await ctx.send("can't sell that")
-        return
-    u = data.get_user(ctx.author.id)
-    pay = prices[item] * amount
-    u["embers"] += pay
-    data.inventory[uid][item] -= amount
-    await ctx.send(f"sold {amount}x {item} for {pay} {CURRENCY}")
-
-@bot.command()
-async def rich(ctx):
-    sorted_users = sorted(data.users.items(), key=lambda x: x[1].get("embers", 0), reverse=True)[:10]
-    embed = discord.Embed(title="richest players", color=0xffd700)
-    for i, (uid, u) in enumerate(sorted_users, 1):
-        member = bot.get_user(int(uid))
-        name = member.display_name if member else f"user_{uid[:6]}"
-        embed.add_field(name=f"#{i} {name}", value=f"{u.get('embers', 0):,} {CURRENCY}", inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def poor(ctx):
-    sorted_users = sorted(data.users.items(), key=lambda x: x[1].get("embers", 0))[:10]
-    embed = discord.Embed(title="poorest players", color=0x808080)
-    for i, (uid, u) in enumerate(sorted_users, 1):
-        member = bot.get_user(int(uid))
-        name = member.display_name if member else f"user_{uid[:6]}"
-        embed.add_field(name=f"#{i} {name}", value=f"{u.get('embers', 0):,} {CURRENCY}", inline=False)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def level(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    needed = u["level"] * 100
-    await ctx.send(f"{target.display_name} is level {u['level']} ({u['xp']}/{needed} xp)")
-
-@bot.command()
-async def xp(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    await ctx.send(f"{target.display_name} has {u['xp']} xp")
-
-@bot.command()
-async def leaderboard(ctx):
-    await global_.invoke(ctx)
-
-@bot.command()
-async def bank(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    await ctx.send(f"{target.display_name}'s bank: {u['bank']:,} {CURRENCY}")
-
-@bot.command()
-async def tax(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    tax_amount = int(u["embers"] * 0.1)
-    u["embers"] -= tax_amount
-    await ctx.send(f"taxed {target.display_name} for {tax_amount} {CURRENCY}. death and taxes, am i right")
-
-@bot.command()
-async def lottery(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    if random.random() < 0.01:
-        jackpot = amount * 100
-        u["embers"] += jackpot
-        await ctx.send(f"JACKPOT! won {jackpot} {CURRENCY}! you're the chosen one!")
-    else:
-        await ctx.send("lost the lottery. as expected. house always wins")
-
-@bot.command()
-async def slots(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    symbols = ["🍒", "🍋", "🍇", "💎", "7️⃣", "🎰"]
-    result = [random.choice(symbols) for _ in range(3)]
-    msg = f"{' | '.join(result)}
+  msg = "**your creatures:**
 "
-    if result[0] == result[1] == result[2] == "7️⃣":
-        winnings = amount * 50
-        u["embers"] += winnings
-        msg += f"SEVEN SEVEN SEVEN! won {winnings} {CURRENCY}!"
-    elif result[0] == result[1] == result[2] == "💎":
-        winnings = amount * 20
-        u["embers"] += winnings
-        msg += f"DIAMONDS! won {winnings} {CURRENCY}!"
-    elif result[0] == result[1] == result[2]:
-        winnings = amount * 5
-        u["embers"] += winnings
-        msg += f"three of a kind! won {winnings} {CURRENCY}!"
-    elif result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
-        winnings = amount * 2
-        u["embers"] += winnings
-        msg += f"two of a kind! won {winnings} {CURRENCY}!"
-    else:
-        msg += f"nothing. lost {amount} {CURRENCY}"
-    await ctx.send(msg)
-
-@bot.command()
-async def blackjack(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    cards = [2,3,4,5,6,7,8,9,10,10,10,10,11]
-    player = [random.choice(cards), random.choice(cards)]
-    dealer = [random.choice(cards), random.choice(cards)]
-    p_total = sum(player)
-    d_total = sum(dealer)
-    msg = f"your hand: {player} = {p_total}
-dealer shows: {dealer[0]}
+  for i, c in enumerate(creatures, 1):
+    msg += f"{i}. **{c['name']}** (lvl {c['level']}) - mood: {c['mood']}
 "
-    if p_total == 21:
-        winnings = amount * 2.5
-        u["embers"] += int(winnings)
-        msg += f"BLACKJACK! won {int(winnings)} {CURRENCY}!"
-    elif p_total > 21:
-        msg += f"bust! lost {amount} {CURRENCY}"
-    elif d_total > 21 or p_total > d_total:
-        winnings = amount * 2
-        u["embers"] += winnings
-        msg += f"you win! dealer had {d_total}. won {winnings} {CURRENCY}"
-    elif p_total < d_total:
-        msg += f"dealer wins with {d_total}. lost {amount} {CURRENCY}"
-    else:
-        u["embers"] += amount
-        msg += f"push! got your money back"
-    await ctx.send(msg)
+  await ctx.send(msg)
 
-# ==================== MORE ECONOMY & FUN COMMANDS ====================
 @bot.command()
-async def roulette(ctx, amount: int, bet: str):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    number = random.randint(0, 36)
-    colors = ["red" if i in [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36] else "black" for i in range(37)]
-    colors[0] = "green"
-    color = colors[number]
-    msg = f"ball landed on {number} {color}
+async def release(ctx, index: int = None):
+  """release a creature"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures to release")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  released = creatures.pop(index - 1)
+  save_user(ctx.author.id, data)
+  await ctx.send(f"you released your **{released['name']}**. it flew away into the sunset 🕊️")
+
+@bot.command()
+async def feed(ctx, index: int = None):
+  """feed a creature"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures to feed")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  if data["embers"] < 10:
+    await ctx.send("you need at least 10 embers to feed a creature")
+    return
+
+  creature = creatures[index - 1]
+  data["embers"] -= 10
+  creature["fed"] = datetime.utcnow().isoformat()
+  creature["mood"] = "happy"
+  creature["xp"] += 20
+
+  if creature["xp"] >= creature["level"] * 100:
+    creature["level"] += 1
+    creature["xp"] = 0
+    save_user(ctx.author.id, data)
+    await ctx.send(f"your **{creature['name']}** ate well and leveled up to **lvl {creature['level']}**! 🎉")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"your **{creature['name']}** ate happily. xp: {creature['xp']}/{creature['level']*100} 🍖")
+
+@bot.command()
+async def neglect(ctx, index: int = None):
+  """neglect a creature (dont do this)"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures to neglect")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  creature = creatures[index - 1]
+  creature["mood"] = "grumpy"
+  creature["xp"] = max(0, creature["xp"] - 10)
+  save_user(ctx.author.id, data)
+  await ctx.send(f"you neglected your **{creature['name']}**. its now **{creature['mood']}** and lost xp. monster")
+
+@bot.command()
+async def mood(ctx, index: int = None):
+  """check a creature's mood"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  creature = creatures[index - 1]
+  moods = {
+    "happy": "its vibing hard rn 🎉",
+    "angry": "its pissed off, watch out 😤",
+    "sleepy": "its about to nap 💤",
+    "hungry": "it wants food NOW 🍖",
+    "playful": "it wants to play! 🎾",
+    "grumpy": "its in a bad mood. probably your fault",
+    "mysterious": "its acting weird... 👀"
+  }
+  await ctx.send(f"your **{creature['name']}** is feeling **{creature['mood']}**. {moods.get(creature['mood'], '')}")
+
+@bot.command()
+async def evolve(ctx, index: int = None):
+  """force evolve a creature (costs embers)"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  creature = creatures[index - 1]
+  cost = creature["level"] * 100
+  if data["embers"] < cost:
+    await ctx.send(f"you need **{cost}** embers to evolve this creature. you got **{data['embers']}**")
+    return
+
+  data["embers"] -= cost
+  creature["level"] += 1
+  creature["xp"] = 0
+  save_user(ctx.author.id, data)
+  await ctx.send(f"your **{creature['name']}** evolved to **lvl {creature['level']}**! its glowing with power ✨")
+
+@bot.command()
+async def breed(ctx, index1: int = None, index2: int = None):
+  """breed two creatures"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if len(creatures) < 2:
+    await ctx.send("you need at least 2 creatures to breed")
+    return
+  if not index1 or not index2 or index1 == index2:
+    await ctx.send("pick 2 different creatures bro")
+    return
+  if index1 < 1 or index1 > len(creatures) or index2 < 1 or index2 > len(creatures):
+    await ctx.send("invalid creature numbers")
+    return
+  if len(creatures) >= 10:
+    await ctx.send("you got too many creatures already, release one first")
+    return
+
+  c1 = creatures[index1 - 1]
+  c2 = creatures[index2 - 1]
+
+  if c1["level"] < 3 or c2["level"] < 3:
+    await ctx.send("both creatures need to be at least lvl 3 to breed")
+    return
+
+  baby_name = random.choice(CREATURE_NAMES)
+  baby = {
+    "name": baby_name,
+    "level": 1,
+    "xp": 0,
+    "mood": "playful",
+    "fed": datetime.utcnow().isoformat(),
+    "id": random.randint(1000, 9999)
+  }
+  data["creatures"].append(baby)
+  save_user(ctx.author.id, data)
+  await ctx.send(f"a baby **{baby_name}** was born! its so cute 🥺 use f cage to see it")
+
+@bot.command()
+async def sacrifice(ctx, index: int = None):
+  """sacrifice a creature for embers (dark)"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures to sacrifice")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  creature = creatures.pop(index - 1)
+  reward = creature["level"] * 50
+  data["embers"] += reward
+  save_user(ctx.author.id, data)
+  await ctx.send(f"you sacrificed your **{creature['name']}** and got **{reward}** embers. the dark side pays well.")
+
+@bot.command()
+async def rename(ctx, index: int = None, *, new_name: str = None):
+  """rename a creature"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+  if not new_name:
+    await ctx.send("what you renaming it to?")
+    return
+
+  old = creatures[index - 1]["name"]
+  creatures[index - 1]["name"] = new_name
+  save_user(ctx.author.id, data)
+  await ctx.send(f"renamed **{old}** to **{new_name}**. dont forget its new name! 🏷️")
+
+@bot.command()
+async def favorite(ctx, index: int = None):
+  """set a favorite creature"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  data["favorite_creature"] = index - 1
+  save_user(ctx.author.id, data)
+  await ctx.send(f"**{creatures[index-1]['name']}** is now your favorite! 💖")
+
+@bot.command()
+async def trade(ctx, index: int = None, target: discord.Member = None):
+  """trade a creature to another user"""
+  if not index or not target or target == ctx.author:
+    await ctx.send("usage: f trade <creature #> @user")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+  creatures = data["creatures"]
+
+  if not creatures or index < 1 or index > len(creatures):
+    await ctx.send("invalid creature number")
+    return
+  if len(target_data["creatures"]) >= 10:
+    await ctx.send(f"{target.display_name} already has 10 creatures")
+    return
+
+  creature = creatures.pop(index - 1)
+  target_data["creatures"].append(creature)
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"traded your **{creature['name']}** to {target.display_name}! hope they take good care of it 🤝")
+
+@bot.command()
+async def auction(ctx, index: int = None, price: int = None):
+  """put a creature up for auction"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not index or not price or index < 1 or index > len(creatures):
+    await ctx.send("usage: f auction <creature #> <price>")
+    return
+
+  creature = creatures[index - 1]
+  await ctx.send(
+    f"🎪 **AUCTION** 🎪
 "
-    win = False
-    if bet.lower() == color:
-        win = True
-        winnings = amount * 2
-    elif bet.isdigit() and int(bet) == number:
-        win = True
-        winnings = amount * 35
-    if win:
-        u["embers"] += winnings
-        msg += f"you win {winnings} {CURRENCY}!"
-    else:
-        msg += f"lost {amount} {CURRENCY}. better luck next time"
-    await ctx.send(msg)
-
-@bot.command()
-async def horse(ctx, amount: int, horse_num: int = None):
-    u = data.get_user(ctx.author.id)
-    if amount > u["embers"]:
-        await ctx.send("broke")
-        return
-    u["embers"] -= amount
-    if not horse_num:
-        horse_num = random.randint(1, 5)
-    winner = random.randint(1, 5)
-    if horse_num == winner:
-        winnings = amount * 4
-        u["embers"] += winnings
-        await ctx.send(f"horse #{horse_num} won! you won {winnings} {CURRENCY}! what a race!")
-    else:
-        await ctx.send(f"horse #{winner} won. your horse #{horse_num} came in dead last. lost {amount} {CURRENCY}")
-
-@bot.command()
-async def pet(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    pets = [f"you pet {target.display_name}. they seem happy", f"{target.display_name} enjoys the pets", f"you pet {target.display_name}. soft", f"{target.display_name} purrs like a cat"]
-    await ctx.send(random.choice(pets))
-
-@bot.command()
-async def hug(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    hugs = [f"{ctx.author.display_name} hugs {target.display_name}! wholesome", f"{target.display_name} gets a big hug!", f"group hug! everyone join in!", f"{ctx.author.display_name} squeezes {target.display_name} tight"]
-    await ctx.send(random.choice(hugs))
-
-@bot.command()
-async def slap(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    slaps = [f"{ctx.author.display_name} slaps {target.display_name}! pow!", f"{target.display_name} got slapped! oof", f"{ctx.author.display_name} delivers a devastating slap", f"{target.display_name}'s face is red now"]
-    await ctx.send(random.choice(slaps))
-
-@bot.command()
-async def punch(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    punches = [f"{ctx.author.display_name} punches {target.display_name}! bam!", f"{target.display_name} took a solid punch", f"{ctx.author.display_name} with the haymaker!", f"{target.display_name} is seeing stars"]
-    await ctx.send(random.choice(punches))
-
-@bot.command()
-async def kiss(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    if target.id == ctx.author.id:
-        await ctx.send("you kissed yourself. that's just weird")
-        return
-    kisses = [f"{ctx.author.display_name} kisses {target.display_name}! 💋", f"{target.display_name} blushes", f"aww {ctx.author.display_name} and {target.display_name} sitting in a tree", f"{ctx.author.display_name} stole a kiss!"]
-    await ctx.send(random.choice(kisses))
-
-@bot.command()
-async def kill(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    deaths = [f"{ctx.author.display_name} kills {target.display_name} with a spoon", f"{target.display_name} died of cringe", f"{ctx.author.display_name} yeeted {target.display_name} into the sun", f"{target.display_name} fell into a pit of lava"]
-    await ctx.send(random.choice(deaths))
-
-@bot.command()
-async def poke(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{ctx.author.display_name} pokes {target.display_name}. hey wake up")
-
-@bot.command()
-async def tickle(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{ctx.author.display_name} tickles {target.display_name}! stop it i'm gonna pee!")
-
-@bot.command()
-async def wave(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{ctx.author.display_name} waves at {target.display_name}! 👋")
-
-@bot.command()
-async def wink(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{ctx.author.display_name} winks at {target.display_name}! 😉")
-
-@bot.command()
-async def dance(ctx):
-    dances = ["🕺", "💃", "┏(＾0＾)┛", "♪┏(・o･)┛♪", "(ノ^_^)ノ"]
-    await ctx.send(f"{ctx.author.display_name} is dancing! {random.choice(dances)}")
-
-@bot.command()
-async def cry(ctx):
-    await ctx.send(f"{ctx.author.display_name} is crying 😭. someone comfort them")
-
-@bot.command()
-async def laugh(ctx):
-    laughs = ["lol", "lmao", "hahaha", "😂", "rofl"]
-    await ctx.send(f"{ctx.author.display_name} is laughing {random.choice(laughs)}")
-
-@bot.command()
-async def sleep(ctx):
-    await ctx.send(f"{ctx.author.display_name} went to sleep 💤. don't wake them")
-
-@bot.command()
-async def eat(ctx, *, food: str = "pizza"):
-    await ctx.send(f"{ctx.author.display_name} is eating {food}. yummy")
-
-@bot.command()
-async def drink(ctx, *, drink: str = "water"):
-    await ctx.send(f"{ctx.author.display_name} is drinking {drink}. stay hydrated")
-
-@bot.command()
-async def sing(ctx, *, song: str = "a banger"):
-    await ctx.send(f"🎵 {ctx.author.display_name} is singing {song}! beautiful voice... probably")
-
-@bot.command()
-async def rap(ctx, *, lyrics: str = "yo yo yo"):
-    await ctx.send(f"🎤 {ctx.author.display_name} drops bars: '{lyrics}' ... fire or trash?")
-
-@bot.command()
-async def joke(ctx):
-    jokes = [
-        "why don't scientists trust atoms? because they make up everything",
-        "why did the scarecrow win an award? he was outstanding in his field",
-        "why don't eggs tell jokes? they'd crack each other up",
-        "what do you call a fake noodle? an impasta",
-        "why did the math book look sad? too many problems"
-    ]
-    await ctx.send(random.choice(jokes))
-
-@bot.command()
-async def fact(ctx):
-    facts = [
-        "honey never spoils. archaeologists found 3000 year old honey still edible",
-        "octopuses have three hearts",
-        "bananas are berries but strawberries aren't",
-        "a day on venus is longer than a year on venus",
-        "wombat poop is cube shaped"
-    ]
-    await ctx.send(f"🤓 did you know: {random.choice(facts)}")
-
-@bot.command()
-async def quote(ctx):
-    quotes = [
-        "'the only way to do great work is to love what you do' - steve jobs",
-        "'be the change you wish to see in the world' - gandhi",
-        "'i think therefore i am' - descartes",
-        "'with great power comes great electricity bill' - unknown",
-        "'i'm not lazy, i'm on energy saving mode' - everyone"
-    ]
-    await ctx.send(random.choice(quotes))
-
-@bot.command()
-async def meme(ctx):
-    memes = ["doge", "pepe", "wojak", "chad", "npc", "distracted boyfriend", "drake format", "expanding brain"]
-    await ctx.send(f"here's a {random.choice(memes)} meme. imagine the image in your head")
-
-@bot.command()
-async def cat(ctx):
-    await ctx.send("🐱 meow! here's a virtual cat. pet it with f pet")
-
-@bot.command()
-async def dog(ctx):
-    await ctx.send("🐕 woof! here's a virtual dog. good boy")
-
-@bot.command()
-async def bird(ctx):
-    await ctx.send("🐦 chirp chirp! bird up!")
-
-@bot.command()
-async def fishy(ctx):
-    await ctx.send("🐟 blub blub! fishy says hi")
-
-@bot.command()
-async def roll(ctx, sides: int = 6):
-    result = random.randint(1, sides)
-    await ctx.send(f"rolled a d{sides}: {result}")
-
-@bot.command()
-async def coin(ctx):
-    result = random.choice(["heads", "tails"])
-    await ctx.send(f"flipped a coin: {result}")
-
-@bot.command()
-async def choose(ctx, *options):
-    if len(options) < 2:
-        await ctx.send("give me at least 2 options to choose from")
-        return
-    await ctx.send(f"i choose: {random.choice(options)}")
-
-@bot.command()
-async def reverse(ctx, *, text: str):
-    await ctx.send(text[::-1])
-
-@bot.command()
-async def len(ctx, *, text: str):
-    await ctx.send(f"that text is {len(text)} characters long")
-
-@bot.command()
-async def uppercase(ctx, *, text: str):
-    await ctx.send(text.upper())
-
-@bot.command()
-async def lowercase(ctx, *, text: str):
-    await ctx.send(text.lower())
-
-@bot.command()
-async def mock(ctx, *, text: str):
-    mocked = "".join([c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text)])
-    await ctx.send(mocked)
-
-@bot.command()
-async def clap(ctx, *, text: str):
-    await ctx.send(text.replace(" ", " 👏 "))
-
-@bot.command()
-async def vaporwave(ctx, *, text: str):
-    vapor = "".join([c + " " for c in text])
-    await ctx.send(vapor)
-
-@bot.command()
-async def emojify(ctx, *, text: str):
-    emojis = {"a": "🇦", "b": "🇧", "c": "🇨", "d": "🇩", "e": "🇪", "f": "🇫", "g": "🇬", "h": "🇭", "i": "🇮",
-              "j": "🇯", "k": "🇰", "l": "🇱", "m": "🇲", "n": "🇳", "o": "🇴", "p": "🇵", "q": "🇶", "r": "🇷",
-              "s": "🇸", "t": "🇹", "u": "🇺", "v": "🇻", "w": "🇼", "x": "🇽", "y": "🇾", "z": "🇿", " ": "   "}
-    result = "".join([emojis.get(c.lower(), c) for c in text])
-    await ctx.send(result)
-
-@bot.command()
-async def spoiler(ctx, *, text: str):
-    await ctx.send(f"||{text}||")
-
-@bot.command()
-async def poll(ctx, *, question: str):
-    msg = await ctx.send(f"📊 poll: {question}")
-    await msg.add_reaction("👍")
-    await msg.add_reaction("👎")
-    await msg.add_reaction("🤷")
-
-@bot.command()
-async def rate(ctx, *, thing: str):
-    rating = random.randint(1, 10)
-    await ctx.send(f"i rate {thing} a {rating}/10. {'fire' if rating >= 8 else 'mid' if rating >= 5 else 'trash'}")
-
-@bot.command()
-async def howgay(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    percent = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} is {percent}% gay {'🏳️‍🌈' if percent > 50 else ''}")
-
-@bot.command()
-async def howsimp(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    percent = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} is {percent}% simp {'😩' if percent > 50 else ''}")
-
-@bot.command()
-async def howsmart(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    percent = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} is {percent}% smart {'🧠' if percent > 50 else ''}")
-
-@bot.command()
-async def howdumb(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    percent = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} is {percent}% dumb {'🤪' if percent > 50 else ''}")
-
-@bot.command()
-async def howlucky(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    percent = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} is {percent}% lucky {'🍀' if percent > 50 else ''}")
-
-@bot.command()
-async def ship(ctx, user1: discord.Member, user2: discord.Member = None):
-    if not user2:
-        user2 = ctx.author
-    percent = random.randint(0, 100)
-    bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
-    await ctx.send(f"💕 {user1.display_name} x {user2.display_name}
-{bar} {percent}%
-{'soulmates!' if percent > 80 else 'cute couple' if percent > 50 else 'just friends' if percent > 20 else 'no chemistry'}")
-
-@bot.command()
-async def 8ball(ctx, *, question: str):
-    await oracle.invoke(ctx, question=question)
-
-@bot.command()
-async def rps(ctx, choice: str):
-    choices = ["rock", "paper", "scissors"]
-    bot_choice = random.choice(choices)
-    user_choice = choice.lower()
-    if user_choice not in choices:
-        await ctx.send("pick rock, paper, or scissors")
-        return
-    if user_choice == bot_choice:
-        await ctx.send(f"both chose {bot_choice}. tie!")
-    elif (user_choice == "rock" and bot_choice == "scissors") or          (user_choice == "paper" and bot_choice == "rock") or          (user_choice == "scissors" and bot_choice == "paper"):
-        await ctx.send(f"you chose {user_choice}, i chose {bot_choice}. you win!")
-    else:
-        await ctx.send(f"you chose {user_choice}, i chose {bot_choice}. i win!")
-
-@bot.command()
-async def ttt(ctx, user: discord.Member):
-    await ctx.send(f"tic tac toe with {user.display_name}! use reactions to play (not implemented fully yet, but the command exists lol)")
-
-@bot.command()
-async def connect4(ctx, user: discord.Member):
-    await ctx.send(f"connect 4 with {user.display_name}! (game logic coming soon tm)")
-
-@bot.command()
-async def hangman(ctx):
-    words = ["discord", "python", "ember", "flame", "bot", "server", "member"]
-    word = random.choice(words)
-    await ctx.send(f"hangman started! word has {len(word)} letters. guess with f guess <letter>")
-    data.server_settings[str(ctx.guild.id)]["hangman"] = {"word": word, "guessed": [], "lives": 6}
-
-@bot.command()
-async def guess(ctx, letter: str):
-    game = data.server_settings.get(str(ctx.guild.id), {}).get("hangman")
-    if not game:
-        await ctx.send("no hangman game active. start one with f hangman")
-        return
-    letter = letter.lower()
-    if letter in game["guessed"]:
-        await ctx.send("already guessed that")
-        return
-    game["guessed"].append(letter)
-    if letter in game["word"]:
-        display = " ".join([c if c in game["guessed"] else "_" for c in game["word"]])
-        if "_" not in display:
-            await ctx.send(f"{display}
-you won! the word was {game['word']}")
-            data.server_settings[str(ctx.guild.id)]["hangman"] = None
-        else:
-            await ctx.send(f"{display}
-correct! {game['lives']} lives left")
-    else:
-        game["lives"] -= 1
-        if game["lives"] <= 0:
-            await ctx.send(f"game over! the word was {game['word']}")
-            data.server_settings[str(ctx.guild.id)]["hangman"] = None
-        else:
-            await ctx.send(f"wrong! {game['lives']} lives left. guessed: {', '.join(game['guessed'])}")
-
-@bot.command()
-async def trivia(ctx):
-    questions = [
-        ("what is 2+2?", "4"),
-        ("what color is the sky?", "blue"),
-        ("what is the capital of france?", "paris"),
-        ("how many days in a year?", "365"),
-        ("what language is this bot written in?", "python")
-    ]
-    q, a = random.choice(questions)
-    await ctx.send(f"trivia: {q}
-(type your answer in chat)")
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
-    try:
-        msg = await bot.wait_for("message", timeout=15.0, check=check)
-        if msg.content.lower() == a.lower():
-            u = data.get_user(ctx.author.id)
-            u["embers"] += 50
-            await ctx.send(f"correct! you won 50 {CURRENCY}")
-        else:
-            await ctx.send(f"wrong! answer was {a}")
-    except asyncio.TimeoutError:
-        await ctx.send(f"too slow! answer was {a}")
-
-# ==================== MORE FUN & UTILITY COMMANDS ====================
-@bot.command()
-async def wouldyourather(ctx):
-    questions = [
-        "would you rather be able to fly or be invisible?",
-        "would you rather have unlimited money or unlimited time?",
-        "would you rather be famous or be rich?",
-        "would you rather eat only pizza or only burgers forever?",
-        "would you rather have a pet dragon or a pet unicorn?"
-    ]
-    await ctx.send(f"🤔 {random.choice(questions)}")
-
-@bot.command()
-async def truth(ctx):
-    truths = [
-        "what's your biggest secret?",
-        "who was your first crush?",
-        "what's the most embarrassing thing you've done?",
-        "have you ever cheated in a game?",
-        "what's your worst habit?"
-    ]
-    await ctx.send(f"🎯 truth: {random.choice(truths)}")
-
-@bot.command()
-async def dare(ctx):
-    dares = [
-        "send a message in all caps for the next 5 minutes",
-        "change your nickname to something embarrassing for 1 hour",
-        "send a random emoji every message for 10 minutes",
-        "compliment the next 3 people who talk",
-        "speak only in rhymes for the next 5 minutes"
-    ]
-    await ctx.send(f"😈 dare: {random.choice(dares)}")
-
-@bot.command()
-async def compliment(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    compliments = [
-        f"{target.display_name} is absolutely radiant today",
-        f"{target.display_name} has a smile that could light up a room",
-        f"{target.display_name} is the most talented person here",
-        f"{target.display_name} is a legend and everyone knows it",
-        f"{target.display_name} is crushing it today! keep going"
-    ]
-    await ctx.send(random.choice(compliments))
-
-@bot.command()
-async def insult(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    insults = [
-        f"{target.display_name} has the charm of a wet sock",
-        f"{target.display_name} is about as useful as a chocolate teapot",
-        f"{target.display_name} couldn't pour water out of a boot with instructions on the heel",
-        f"{target.display_name} is the reason the gene pool needs a lifeguard",
-        f"{target.display_name} has two brain cells and they're both fighting for third place"
-    ]
-    await ctx.send(random.choice(insults))
-
-@bot.command()
-async def motivation(ctx):
-    quotes = [
-        "you got this! don't give up now",
-        "every expert was once a beginner. keep grinding",
-        "success is the sum of small efforts repeated daily",
-        "the only bad workout is the one that didn't happen",
-        "believe you can and you're halfway there"
-    ]
-    await ctx.send(f"💪 {random.choice(quotes)}")
-
-@bot.command()
-async def bored(ctx):
-    activities = [
-        "go outside and touch grass",
-        "learn a new programming language",
-        "watch a documentary about penguins",
-        "try to draw something with your non-dominant hand",
-        "organize your desktop icons by color",
-        "learn to juggle",
-        "write a poem about embers",
-        "build a pillow fort"
-    ]
-    await ctx.send(f"🎯 {random.choice(activities)}")
-
-@bot.command()
-async def fortune(ctx):
-    fortunes = [
-        "you will find great wealth soon... or lose it all gambling. 50/50",
-        "a surprise is waiting for you around the corner",
-        "your next gamble will be lucky. probably",
-        "beware of scammers today",
-        "good things come to those who beg... i mean wait",
-        "your creature will evolve soon. maybe",
-        "someone special is thinking about you. or plotting against you"
-    ]
-    await ctx.send(f"🔮 {random.choice(fortunes)}")
-
-@bot.command()
-async def magic8ball(ctx, *, question: str):
-    await oracle.invoke(ctx, question=question)
-
-@bot.command()
-async def ascii(ctx, *, text: str):
-    ascii_art = {
-        "shrug": "¯\_(ツ)_/¯",
-        "tableflip": "(╯°□°）╯︵ ┻━┻",
-        "unflip": "┬─┬ ノ( ゜-゜ノ)",
-        "lenny": "( ͡° ͜ʖ ͡°)",
-        "sad": "(◕︵◕)",
-        "happy": "(◕‿◕)"
-    }
-    if text.lower() in ascii_art:
-        await ctx.send(ascii_art[text.lower()])
-    else:
-        await ctx.send("available: shrug, tableflip, unflip, lenny, sad, happy")
-
-@bot.command()
-async def avatar(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    embed = discord.Embed(title=f"{target.display_name}'s avatar")
-    embed.set_image(url=target.display_avatar.url)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def userinfo(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    embed = discord.Embed(title=f"{target.display_name}'s info", color=target.color)
-    embed.add_field(name="id", value=target.id, inline=True)
-    embed.add_field(name="joined server", value=target.joined_at.strftime("%Y-%m-%d") if target.joined_at else "unknown", inline=True)
-    embed.add_field(name="account created", value=target.created_at.strftime("%Y-%m-%d"), inline=True)
-    embed.add_field(name="roles", value=len(target.roles), inline=True)
-    embed.add_field(name="top role", value=target.top_role.name, inline=True)
-    embed.add_field(name="bot?", value="yes" if target.bot else "no", inline=True)
-    embed.set_thumbnail(url=target.display_avatar.url)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def roleinfo(ctx, *, role_name: str):
-    role = discord.utils.get(ctx.guild.roles, name=role_name)
-    if not role:
-        await ctx.send("role not found")
-        return
-    embed = discord.Embed(title=f"{role.name} info", color=role.color)
-    embed.add_field(name="id", value=role.id, inline=True)
-    embed.add_field(name="members", value=len(role.members), inline=True)
-    embed.add_field(name="created", value=role.created_at.strftime("%Y-%m-%d"), inline=True)
-    embed.add_field(name="hoisted", value="yes" if role.hoist else "no", inline=True)
-    embed.add_field(name="mentionable", value="yes" if role.mentionable else "no", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def channelinfo(ctx):
-    ch = ctx.channel
-    embed = discord.Embed(title=f"#{ch.name} info")
-    embed.add_field(name="id", value=ch.id, inline=True)
-    embed.add_field(name="type", value=str(ch.type), inline=True)
-    embed.add_field(name="created", value=ch.created_at.strftime("%Y-%m-%d"), inline=True)
-    embed.add_field(name="nsfw", value="yes" if ch.is_nsfw() else "no", inline=True)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def botinfo(ctx):
-    embed = discord.Embed(title="flame bot info", color=0xff6b35)
-    embed.add_field(name="prefix", value="f / flame", inline=True)
-    embed.add_field(name="commands", value="350+", inline=True)
-    embed.add_field(name="owner", value=f"<@{OWNER_ID}>", inline=True)
-    embed.add_field(name="currency", value=CURRENCY, inline=True)
-    embed.add_field(name="library", value="discord.py", inline=True)
-    embed.add_field(name="servers", value=len(bot.guilds), inline=True)
-    await ctx.send(embed=embed)
+    f"seller: {ctx.author.display_name}
+"
+    f"creature: **{creature['name']}** (lvl {creature['level']})
+"
+    f"starting bid: **{price}** embers
+"
+    f"type f bid @{ctx.author.name} {price} to buy!"
+  )
+
+@bot.command()
+async def bid(ctx, seller: discord.Member = None, amount: int = None):
+  """bid on an auction"""
+  if not seller or not amount:
+    await ctx.send("usage: f bid @seller <amount>")
+    return
+  if seller == ctx.author:
+    await ctx.send("you cant bid on your own auction bro")
+    return
+
+  await ctx.send(f"bid **{amount}** embers placed! {seller.display_name} needs to accept with f accept @{ctx.author.name}")
+
+@bot.command()
+async def inspect(ctx, index: int = None):
+  """inspect a creature closely"""
+  data = load_user(ctx.author.id)
+  creatures = data["creatures"]
+
+  if not creatures:
+    await ctx.send("you dont have any creatures")
+    return
+  if not index or index < 1 or index > len(creatures):
+    await ctx.send(f"pick a number 1-{len(creatures)} bro")
+    return
+
+  c = creatures[index - 1]
+  await ctx.send(
+    f"**{c['name']}** (ID: {c['id']})
+"
+    f"level: **{c['level']}**
+"
+    f"xp: **{c['xp']}**/{c['level']*100}
+"
+    f"mood: **{c['mood']}**
+"
+    f"last fed: {c['fed'][:10]}
+"
+    f"this creature is a beast"
+  )
+
+@bot.command()
+async def adopt(ctx, target: discord.Member = None):
+  """adopt a creature from someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you tryna adopt from?")
+    return
+
+  target_data = load_user(target.id)
+  if not target_data["creatures"]:
+    await ctx.send(f"{target.display_name} doesnt have any creatures to adopt")
+    return
+
+  await ctx.send(f"asked {target.display_name} to let you adopt a creature! they need to use f trade")
+
+@bot.command()
+async def kidnap(ctx, target: discord.Member = None):
+  """try to kidnap someone's creature"""
+  if not target or target == ctx.author:
+    await ctx.send("who you tryna kidnap from?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if not target_data["creatures"]:
+    await ctx.send(f"{target.display_name} aint got no creatures to steal")
+    return
+  if len(data["creatures"]) >= 10:
+    await ctx.send("you got too many creatures already")
+    return
+
+  success = random.random() < 0.15
+  if success:
+    stolen = target_data["creatures"].pop(random.randint(0, len(target_data["creatures"])-1))
+    data["creatures"].append(stolen)
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"you successfully kidnapped a **{stolen['name']}** from {target.display_name}! youre a criminal 🏴‍☠️")
+  else:
+    fine = random.randint(20, 100)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you got caught trying to kidnap and paid a **{fine}** ember fine. stick to legal adoptions")
+
+
+# ── COMBAT COMMANDS ──
+
+@bot.command()
+async def duel(ctx, target: discord.Member = None):
+  """challenge someone to a duel"""
+  if not target or target == ctx.author:
+    await ctx.send("who you dueling bro?")
+    return
+  if target.bot:
+    await ctx.send("you cant duel a bot bro")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  await ctx.send(f"{target.mention}! {ctx.author.display_name} challenges you to a duel! type **accept** or **decline**")
+
+  def check(m):
+    return m.author == target and m.channel == ctx.channel and m.content.lower() in ["accept", "decline"]
+
+  try:
+    msg = await bot.wait_for("message", timeout=30.0, check=check)
+    if msg.content.lower() == "decline":
+      await ctx.send(f"{target.display_name} pussied out")
+      return
+  except asyncio.TimeoutError:
+    await ctx.send(f"{target.display_name} didnt respond in time. coward")
+    return
+
+  p1_power = data["level"] * 10 + random.randint(0, 50)
+  p2_power = target_data["level"] * 10 + random.randint(0, 50)
+
+  await ctx.send("⚔️ **DUEL STARTING** ⚔️")
+  await asyncio.sleep(1)
+
+  rounds = []
+  for i in range(3):
+    r1 = random.randint(1, 20)
+    r2 = random.randint(1, 20)
+    rounds.append((r1, r2))
+    await ctx.send(f"round {i+1}: {ctx.author.display_name} rolled **{r1}** | {target.display_name} rolled **{r2}**")
+    await asyncio.sleep(1)
+
+  p1_total = sum(r[0] for r in rounds) + p1_power
+  p2_total = sum(r[1] for r in rounds) + p2_power
+
+  if p1_total > p2_total:
+    winnings = random.randint(50, 200)
+    data["embers"] += winnings
+    data["wins"] += 1
+    target_data["losses"] += 1
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"🏆 {ctx.author.display_name} WINS! gained **{winnings}** embers and bragging rights")
+  elif p2_total > p1_total:
+    winnings = random.randint(50, 200)
+    target_data["embers"] += winnings
+    target_data["wins"] += 1
+    data["losses"] += 1
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"🏆 {target.display_name} WINS! gained **{winnings}** embers. {ctx.author.display_name} took an L")
+  else:
+    await ctx.send("its a draw! nobody wins, friendship wins i guess 🤝")
+
+@bot.command()
+async def raid(ctx, target: discord.Member = None):
+  """raid someone's embers"""
+  if not target or target == ctx.author:
+    await ctx.send("who you raiding bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if target_data["embers"] < 50:
+    await ctx.send(f"{target.display_name} is too broke to raid")
+    return
+
+  success = random.random() < 0.35
+  if success:
+    amount = random.randint(50, min(300, target_data["embers"]))
+    data["embers"] += amount
+    target_data["embers"] -= amount
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"raid successful! stole **{amount}** embers from {target.display_name}! 🏴‍☠️")
+  else:
+    loss = random.randint(10, 50)
+    data["embers"] = max(0, data["embers"] - loss)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"raid failed! you lost **{loss}** embers retreating. shoulda planned better")
+
+@bot.command()
+async def ambush(ctx, target: discord.Member = None):
+  """ambush someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you ambushing bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  success = random.random() < 0.5
+  if success:
+    amount = random.randint(20, 150)
+    data["embers"] += amount
+    target_data["embers"] = max(0, target_data["embers"] - amount)
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"ambush successful! caught {target.display_name} off guard and took **{amount}** embers! 😈")
+  else:
+    await ctx.send(f"{target.display_name} saw you coming and dodged. embarrassing")
+
+@bot.command()
+async def defend(ctx):
+  """defend yourself (gives temporary protection)"""
+  data = load_user(ctx.author.id)
+  data["defending"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+  save_user(ctx.author.id, data)
+  await ctx.send("you raised your defenses! youre protected from raids for 10 minutes 🛡️")
+
+@bot.command()
+async def berserk(ctx, target: discord.Member = None):
+  """go berserk on someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you going berserk on bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if data["embers"] < 50:
+    await ctx.send("you need 50 embers to go berserk bro")
+    return
+
+  data["embers"] -= 50
+  power = random.randint(1, 100)
+
+  if power > 70:
+    amount = random.randint(100, 400)
+    data["embers"] += amount
+    target_data["embers"] = max(0, target_data["embers"] - amount)
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"BERSERK MODE! you destroyed {target.display_name} and took **{amount}** embers! 🔥🔥🔥")
+  elif power > 30:
+    amount = random.randint(50, 150)
+    data["embers"] += amount
+    target_data["embers"] = max(0, target_data["embers"] - amount)
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"you went berserk and got **{amount}** embers. decent rampage 🔥")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you tripped while going berserk and lost 50 embers. smooth")
+
+@bot.command()
+async def bribe(ctx, target: discord.Member = None, amount: int = None):
+  """bribe someone to leave you alone"""
+  if not target or not amount or target == ctx.author:
+    await ctx.send("usage: f bribe @user <amount>")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+  target_data = load_user(target.id)
+  target_data["embers"] += amount
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"you bribed {target.display_name} with **{amount}** embers. money talks 💰")
+
+@bot.command()
+async def flee(ctx):
+  """flee from danger"""
+  outcomes = [
+    "you ran away successfully. coward but alive 🏃",
+    "you tried to flee but tripped. embarrassing",
+    "you vanished into the shadows. ninja style 🥷",
+    "you got away but dropped some embers. oops",
+  ]
+  await ctx.send(random.choice(outcomes))
+
+@bot.command()
+async def taunt(ctx, target: discord.Member = None):
+  """taunt someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you taunting bro?")
+    return
+
+  taunts = [
+    f"{target.mention} youre so broke even beggars pity you",
+    f"{target.mention} ive seen bots with more personality than you",
+    f"{target.mention} you fight like a dairy farmer 🥛",
+    f"{target.mention} your creatures are ashamed of you",
+    f"{target.mention} is that your best? my grandma hits harder 👵",
+    f"{target.mention} youre the reason the gene pool needs a lifeguard 🏊",
+  ]
+  await ctx.send(random.choice(taunts))
+
+@bot.command()
+async def combo(ctx, target: discord.Member = None):
+  """hit someone with a combo"""
+  if not target or target == ctx.author:
+    await ctx.send("who you comboing bro?")
+    return
+
+  hits = random.randint(2, 5)
+  total = 0
+  msg = f"⚡ **COMBO x{hits}** on {target.display_name}!
+"
+  for i in range(hits):
+    dmg = random.randint(10, 50)
+    total += dmg
+    msg += f"hit {i+1}: **{dmg}** dmg
+"
+
+  target_data = load_user(target.id)
+  target_data["embers"] = max(0, target_data["embers"] - total)
+  save_user(target.id, target_data)
+  msg += f"total damage: **{total}** embers stolen! 🔥"
+  await ctx.send(msg)
+
+@bot.command()
+async def revive(ctx):
+  """revive yourself (reset losses)"""
+  data = load_user(ctx.author.id)
+  if data["losses"] == 0:
+    await ctx.send("you havent lost anything to revive from")
+    return
+  if data["embers"] < 100:
+    await ctx.send("you need 100 embers to revive bro")
+    return
+
+  data["embers"] -= 100
+  data["losses"] = 0
+  save_user(ctx.author.id, data)
+  await ctx.send("you revived! all losses forgiven. fresh start baby 🔄")
+
+@bot.command()
+async def wager(ctx, amount: int = None):
+  """wager embers on a 50/50"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you wagering bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+
+  if random.random() < 0.5:
+    winnings = amount * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you won! got back **{winnings}** embers! double or nothing? 🎰")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you lost **{amount}** embers. the house always wins")
+
+@bot.command()
+async def rank(ctx):
+  """check your combat rank"""
+  data = load_user(ctx.author.id)
+  wins = data["wins"]
+  losses = data["losses"]
+  ratio = wins / max(losses, 1)
+
+  if wins < 5:
+    rank = "peasant"
+  elif wins < 15:
+    rank = "warrior"
+  elif wins < 30:
+    rank = "knight"
+  elif wins < 50:
+    rank = "champion"
+  else:
+    rank = "legend"
+
+  await ctx.send(f"your rank: **{rank}** | wins: **{wins}** | losses: **{losses}** | ratio: **{ratio:.2f}** ⚔️")
+
+
+# ── GAMBLING COMMANDS ──
+
+@bot.command()
+async def dice(ctx, bet: int = None):
+  """roll dice, bet embers"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  roll = random.randint(1, 6)
+
+  if roll >= 4:
+    winnings = bet * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you rolled a **{roll}**! won **{winnings}** embers! 🎲")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you rolled a **{roll}**. lost your bet. better luck next time")
+
+@bot.command()
+async def shells(ctx, bet: int = None, guess: int = None):
+  """shell game - guess which shell has the ball"""
+  if not bet or bet <= 0 or not guess or guess < 1 or guess > 3:
+    await ctx.send("usage: f shells <bet> <1-3>")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  answer = random.randint(1, 3)
+
+  if guess == answer:
+    winnings = bet * 3
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"ball was under shell **{answer}**! you won **{winnings}** embers! 🐚")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"ball was under shell **{answer}**. you picked **{guess}**. lost your bet")
+
+@bot.command(name="coinflip")
+async def coinflip_cmd(ctx, bet: int = None, side: str = None):
+  """flip a coin"""
+  if not bet or bet <= 0 or not side or side.lower() not in ["heads", "tails"]:
+    await ctx.send("usage: f coinflip <bet> heads/tails")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  result = random.choice(["heads", "tails"])
+
+  if side.lower() == result:
+    winnings = bet * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"its **{result}**! you won **{winnings}** embers! 🪙")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"its **{result}**. you picked **{side}**. rip your bet")
+
+@bot.command(name="cf")
+async def cf_cmd(ctx, bet: int = None, side: str = None):
+  """shortcut for coinflip"""
+  await coinflip_cmd(ctx, bet, side)
+
+@bot.command()
+async def spin(ctx, bet: int = None):
+  """spin the wheel"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  outcomes = [
+    ("x0", 0), ("x0.5", 0.5), ("x1", 1), ("x1", 1), ("x2", 2), ("x2", 2), ("x3", 3), ("x5", 5), ("x10", 10)
+  ]
+  result, mult = random.choice(outcomes)
+  winnings = int(bet * mult)
+  data["embers"] += winnings
+  save_user(ctx.author.id, data)
+
+  if mult >= 3:
+    await ctx.send(f"wheel landed on **{result}**! you won **{winnings}** embers! JACKPOT! 🎰🔥")
+  elif mult >= 1:
+    await ctx.send(f"wheel landed on **{result}**. you got back **{winnings}** embers. not bad 🎰")
+  else:
+    await ctx.send(f"wheel landed on **{result}**. you got **{winnings}** embers. ouch")
+
+@bot.command()
+async def surge(ctx, bet: int = None):
+  """surge gamble - high risk high reward"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  roll = random.random()
+
+  if roll < 0.6:
+    save_user(ctx.author.id, data)
+    await ctx.send("the surge failed. lost everything. high risk means high losses too")
+  elif roll < 0.85:
+    winnings = int(bet * 2)
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"surge successful! **{winnings}** embers! ⚡")
+  elif roll < 0.95:
+    winnings = int(bet * 5)
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"MASSIVE SURGE! **{winnings}** embers! youre on fire! 🔥⚡")
+  else:
+    winnings = int(bet * 10)
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"LEGENDARY SURGE! **{winnings}** EMBERS! HOLY SHIT! 🔥🔥🔥⚡")
+
+@bot.command()
+async def vault(ctx, amount: int = None):
+  """store embers in vault (cant be stolen)"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you storing bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  if "vault" not in data:
+    data["vault"] = 0
+
+  data["embers"] -= amount
+  data["vault"] += amount
+  save_user(ctx.author.id, data)
+  await ctx.send(f"stored **{amount}** embers in your vault. safe from raids! total vault: **{data['vault']}** 🔒")
+
+@bot.command()
+async def pick(ctx, bet: int = None):
+  """pick a card"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  card = random.randint(1, 13)
+
+  if card >= 10:
+    winnings = bet * 3
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you drew a **{card}**! won **{winnings}** embers! 🃏")
+  elif card >= 6:
+    winnings = bet * 1
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you drew a **{card}**. got your money back. could be worse 🃏")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you drew a **{card}**. lost your bet. unlucky 🃏")
+
+@bot.command()
+async def chase(ctx, bet: int = None):
+  """chase game - run from the cops"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  distance = 0
+  msg = await ctx.send("🏃 **CHASE STARTED** 🚔
+distance: 0m")
+
+  for i in range(5):
+    await asyncio.sleep(1)
+    step = random.randint(-10, 30)
+    distance += step
+    await msg.edit(content=f"🏃 **CHASE** 🚔
+distance: {distance}m")
+
+  if distance >= 50:
+    winnings = bet * 4
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you escaped! won **{winnings}** embers! youre untouchable 🏃💨")
+  elif distance >= 20:
+    winnings = bet * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you barely got away! won **{winnings}** embers! close call 🏃")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("the cops caught you. lost your bet and your dignity 🚔")
+
+@bot.command()
+async def chamber(ctx, bet: int = None):
+  """russian roulette style game"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  chamber = random.randint(1, 6)
+
+  if chamber == 1:
+    save_user(ctx.author.id, data)
+    await ctx.send("💥 BANG! you lost everything. shoulda quit while ahead")
+  else:
+    winnings = int(bet * 1.5)
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"*click* chamber {chamber} was empty! won **{winnings}** embers! living dangerously 🔫")
+
+@bot.command()
+async def rig(ctx, target: discord.Member = None):
+  """try to rig a game in your favor (risky)"""
+  if not target or target == ctx.author:
+    await ctx.send("who you rigging against bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < 200:
+    await ctx.send("you need 200 embers to rig a game bro")
+    return
+
+  data["embers"] -= 200
+  success = random.random() < 0.3
+
+  if success:
+    target_data = load_user(target.id)
+    amount = random.randint(100, 300)
+    data["embers"] += amount
+    target_data["embers"] = max(0, target_data["embers"] - amount)
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"you rigged the game and took **{amount}** embers from {target.display_name}! the system is rigged 😈")
+  else:
+    fine = random.randint(50, 150)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you got caught rigging and paid a **{fine}** ember fine. cheaters never prosper")
+
+
+# ── SOCIAL COMMANDS ──
+
+@bot.command()
+async def marry(ctx, target: discord.Member = None):
+  """marry someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you marrying bro? yourself?")
+    return
+  if target.bot:
+    await ctx.send("you cant marry a bot bro")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if data.get("married_to"):
+    await ctx.send("youre already married bro, divorce first")
+    return
+  if target_data.get("married_to"):
+    await ctx.send(f"{target.display_name} is already taken. homewrecker energy")
+    return
+
+  await ctx.send(f"{target.mention}! {ctx.author.display_name} wants to marry you! type **yes** or **no**")
+
+  def check(m):
+    return m.author == target and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
+
+  try:
+    msg = await bot.wait_for("message", timeout=30.0, check=check)
+    if msg.content.lower() == "no":
+      await ctx.send(f"{target.display_name} said no. rejected in 4k")
+      return
+  except asyncio.TimeoutError:
+    await ctx.send("they ghosted you. left on read")
+    return
+
+  data["married_to"] = target.id
+  target_data["married_to"] = ctx.author.id
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"💍 {ctx.author.display_name} and {target.display_name} are now married! congrats i guess")
+
+@bot.command()
+async def divorce(ctx):
+  """divorce your partner"""
+  data = load_user(ctx.author.id)
+  if not data.get("married_to"):
+    await ctx.send("youre not even married bro")
+    return
+
+  partner_id = data["married_to"]
+  partner_data = load_user(partner_id)
+
+  data["married_to"] = None
+  partner_data["married_to"] = None
+  save_user(ctx.author.id, data)
+  save_user(partner_id, partner_data)
+  await ctx.send("divorced. back on the market i guess 💔")
+
+@bot.command()
+async def will(ctx, target: discord.Member = None, amount: int = None):
+  """leave embers to someone in your will"""
+  if not target or not amount or amount <= 0:
+    await ctx.send("usage: f will @user <amount>")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  if "will" not in data:
+    data["will"] = {}
+  data["will"][str(target.id)] = amount
+  save_user(ctx.author.id, data)
+  await ctx.send(f"left **{amount}** embers to {target.display_name} in your will. morbid but ok")
+
+@bot.command()
+async def cult(ctx, *, name: str = None):
+  """start a cult"""
+  if not name:
+    await ctx.send("whats your cult called bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if "cult" in data:
+    await ctx.send("you already lead a cult bro. one cult at a time")
+    return
+
+  data["cult"] = {"name": name, "members": [ctx.author.id], "level": 1}
+  save_user(ctx.author.id, data)
+  await ctx.send(f"the **{name}** cult has been founded! recruit members with f tribute")
+
+@bot.command()
+async def betray(ctx, target: discord.Member = None):
+  """betray someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you betraying bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if target_data["embers"] < 50:
+    await ctx.send(f"{target.display_name} aint even worth betraying, they broke")
+    return
+
+  amount = random.randint(20, min(200, target_data["embers"]))
+  data["embers"] += amount
+  target_data["embers"] -= amount
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"you betrayed {target.display_name} and stole **{amount}** embers. cold blooded 🐍")
+
+@bot.command()
+async def tribute(ctx, target: discord.Member = None, amount: int = None):
+  """pay tribute to someone"""
+  if not target or not amount or amount <= 0:
+    await ctx.send("usage: f tribute @user <amount>")
+    return
+  if target == ctx.author:
+    await ctx.send("you cant tribute to yourself bro")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+  target_data = load_user(target.id)
+  target_data["embers"] += amount
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"you paid **{amount}** embers tribute to {target.display_name}. bow down 🙇")
+
+@bot.command()
+async def roast(ctx, target: discord.Member = None):
+  """roast someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you roasting bro?")
+    return
+
+  roasts = [
+    f"{target.mention} youre like a cloud. when you disappear its a beautiful day",
+    f"{target.mention} id agree with you but then wed both be wrong",
+    f"{target.mention} youre not stupid, you just have bad luck thinking",
+    f"{target.mention} im jealous of people who dont know you",
+    f"{target.mention} youre the reason shampoo has instructions",
+    f"{target.mention} if laughter is the best medicine, your face must be curing the world",
+    f"{target.mention} youre not dumb, you just have a lot of blonde moments",
+    f"{target.mention} id explain it to you but i left my crayons at home",
+    f"{target.mention} youre proof that evolution can go in reverse",
+    f"{target.mention} youre like a software update. whenever i see you i think 'not now'",
+  ]
+  await ctx.send(random.choice(roasts))
+
+@bot.command()
+async def confess(ctx, *, message: str = None):
+  """confess something anonymously"""
+  if not message:
+    await ctx.send("what you confessing bro?")
+    return
+
+  await ctx.message.delete()
+  await ctx.send(f"📢 **ANONYMOUS CONFESSION** 📢
+{message}")
+
+# ── UTILITY COMMANDS ──
+
+@bot.command()
+async def tutorial(ctx):
+  """get a tutorial on how to use the bot"""
+  await ctx.send(
+    "**flame bot tutorial** 🔥
+"
+    "prefix: **f ** or **flame ** (space required!)
+"
+    "currency: **embers**
+
+"
+    "**getting started:**
+"
+    "f daily - claim free embers every 24h
+"
+    "f embers - check your balance
+"
+    "f beg - beg for spare change
+"
+    "f help - see all commands
+
+"
+    "**economy:** invest, scam, heist, loan, etc
+"
+    "**creatures:** summon, feed, breed, evolve
+"
+    "**combat:** duel, raid, berserk, wager
+"
+    "**gambling:** dice, coinflip, spin, chamber
+"
+    "**social:** marry, roast, confess
+
+"
+    "good luck and dont go broke"
+  )
+
+@bot.command()
+async def stats(ctx, target: discord.Member = None):
+  """check your or someone else's stats"""
+  target = target or ctx.author
+  data = load_user(target.id)
+
+  embers = data["embers"]
+  level = data["level"]
+  xp = data["xp"]
+  wins = data["wins"]
+  losses = data["losses"]
+  creatures = len(data["creatures"])
+  loan = data["loan"]
+  streak = data["daily_streak"]
+
+  await ctx.send(
+    f"**{target.display_name}'s stats** 📊
+"
+    f"embers: **{embers}**
+"
+    f"level: **{level}** (xp: {xp})
+"
+    f"combat: **{wins}**W / **{losses}**L
+"
+    f"creatures: **{creatures}**
+"
+    f"daily streak: **{streak}**
+"
+    f"loan: **{loan}** embers"
+  )
+
+@bot.command()
+async def server(ctx):
+  """server info"""
+  guild = ctx.guild
+  await ctx.send(
+    f"**{guild.name}** 🏰
+"
+    f"members: **{guild.member_count}**
+"
+    f"created: {guild.created_at.strftime('%Y-%m-%d')}
+"
+    f"owner: {guild.owner.display_name if guild.owner else 'unknown'}
+"
+    f"channels: **{len(guild.channels)}**
+"
+    f"roles: **{len(guild.roles)}**"
+  )
+
+@bot.command()
+async def global_lb(ctx):
+  """global leaderboard"""
+  all_ids = get_all_user_ids()
+  users = []
+  for uid in all_ids:
+    d = load_user(uid)
+    users.append((uid, d["embers"]))
+
+  users.sort(key=lambda x: x[1], reverse=True)
+
+  msg = "**global ember leaderboard** 🌍
+"
+  for i, (uid, embers) in enumerate(users[:10], 1):
+    user = bot.get_user(uid)
+    name = user.display_name if user else f"user_{uid}"
+    msg += f"{i}. **{name}** - {embers} embers
+"
+
+  await ctx.send(msg)
+
+@bot.command()
+async def settings(ctx):
+  """check your settings"""
+  data = load_user(ctx.author.id)
+  married = "yes" if data.get("married_to") else "no"
+  vault = data.get("vault", 0)
+
+  await ctx.send(
+    f"**your settings** ⚙️
+"
+    f"married: **{married}**
+"
+    f"vault: **{vault}** embers
+"
+    f"notifications: on
+"
+    f"theme: default"
+  )
+
+@bot.command()
+async def cooldowns(ctx):
+  """check your cooldowns"""
+  data = load_user(ctx.author.id)
+  cds = data.get("cooldowns", {})
+  now = datetime.utcnow()
+
+  if not cds:
+    await ctx.send("no active cooldowns. youre free to do whatever")
+    return
+
+  msg = "**your cooldowns:**
+"
+  for key, time_str in cds.items():
+    last = datetime.fromisoformat(time_str)
+    elapsed = now - last
+    msg += f"{key}: {elapsed.total_seconds()//60:.0f}m ago
+"
+  await ctx.send(msg)
+
+@bot.command()
+async def changelog(ctx):
+  """bot changelog"""
+  await ctx.send(
+    "**flame bot changelog** 📝
+"
+    "v1.0 - initial release
+"
+    "- 350+ commands added
+"
+    "- economy system
+"
+    "- creature system
+"
+    "- combat system
+"
+    "- gambling system
+"
+    "- moderation tools
+"
+    "- social features
+"
+    "- data persistence"
+  )
+
+
+# ── WEIRD COMMANDS ──
+
+@bot.command()
+async def dream(ctx):
+  """have a random dream"""
+  dreams = [
+    "you dreamt about swimming in a pool of embers. woke up and checked your balance. still broke",
+    "you dreamt you were the bot owner. then you woke up. sad",
+    "you dreamt about marrying a dragon. weird but ok",
+    "you dreamt you won the lottery. then you realized this bot doesnt have a lottery",
+    "you dreamt about being rich. reality hit different",
+    "you dreamt you could fly. woke up and fell off your bed",
+    "you dreamt about a world without taxes. woke up crying",
+    "you dreamt you had 1 million embers. it was just a dream tho",
+    "you dreamt about eating pizza with the bot owner. random",
+    "you dreamt you were a creature in someones cage. existential crisis"
+  ]
+  await ctx.send(random.choice(dreams))
+
+@bot.command()
+async def curse(ctx, target: discord.Member = None):
+  """curse someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you cursing bro?")
+    return
+
+  curses = [
+    f"you cursed {target.display_name}. may their dice always roll 1",
+    f"you cursed {target.display_name}. may they always get tails on coinflip",
+    f"you cursed {target.display_name}. may their creatures always be grumpy",
+    f"you cursed {target.display_name}. may they never win a duel",
+    f"you cursed {target.display_name}. may their investments always fail",
+    f"you cursed {target.display_name}. may they step on a lego every morning",
+    f"you cursed {target.display_name}. may their wifi always lag",
+    f"you cursed {target.display_name}. may they always get the worst rng",
+  ]
+  await ctx.send(random.choice(curses))
+
+@bot.command()
+async def bless(ctx, target: discord.Member = None):
+  """bless someone"""
+  if not target:
+    target = ctx.author
+
+  blessings = [
+    f"you blessed {target.display_name}. may their dice always roll 6",
+    f"you blessed {target.display_name}. may they win every coinflip",
+    f"you blessed {target.display_name}. may their creatures always be happy",
+    f"you blessed {target.display_name}. may they win every duel",
+    f"you blessed {target.display_name}. may their investments always profit",
+    f"you blessed {target.display_name}. may they find money on the street",
+    f"you blessed {target.display_name}. may their wifi never lag",
+    f"you blessed {target.display_name}. may they always get the best rng",
+  ]
+  await ctx.send(random.choice(blessings))
+
+@bot.command()
+async def time(ctx):
+  """check the time"""
+  now = datetime.utcnow()
+  await ctx.send(f"its **{now.strftime('%H:%M')}** utc. time is money and youre wasting both")
+
+@bot.command()
+async def weather(ctx):
+  """check the weather (fake)"""
+  weathers = [
+    "its sunny outside. perfect day to grind embers",
+    "its raining. good day to stay inside and gamble",
+    "its cloudy. mood matches the weather",
+    "its storming. nature is angry like you when you lose a bet",
+    "its snowing. cold outside but your wallet is colder",
+    "its foggy. cant see your future but i can see youre broke",
+    "its windy. your money is blowing away",
+    "its a heatwave. almost as hot as your losing streak"
+  ]
+  await ctx.send(random.choice(weathers))
+
+@bot.command()
+async def oracle(ctx, *, question: str = None):
+  """ask the oracle a question"""
+  if not question:
+    await ctx.send("what you asking the oracle bro?")
+    return
+
+  answers = [
+    "yes. definitely yes",
+    "no. absolutely not",
+    "maybe. probably not tho",
+    "ask again later im busy",
+    "signs point to yes but dont trust me",
+    "outlook not so good. like your bank account",
+    "without a doubt. jk i have doubts",
+    "concentrate and ask again. you werent concentrating enough",
+    "better not tell you now. its a secret",
+    "my sources say no. and my sources are never wrong",
+    "as i see it yes. but i need glasses so",
+    "reply hazy try again. like your life choices",
+    "dont count on it. seriously dont",
+    "most likely. but most likely means nothing",
+    "you already know the answer. deep down"
+  ]
+  await ctx.send(f"🎱 **oracle says:** {random.choice(answers)}")
+
+@bot.command()
+async def mimic(ctx, target: discord.Member = None):
+  """mimic someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you mimicking bro?")
+    return
+
+  mimics = [
+    f"*does a perfect impression of {target.display_name}* 'uhh yeah im {target.display_name} and im cool'",
+    f"*mimics {target.display_name}* 'i have no embers and i must scream'",
+    f"*impersonates {target.display_name}* 'please someone marry me im lonely'",
+    f"*acts like {target.display_name}* 'im not addicted to gambling i can stop anytime'",
+    f"*copies {target.display_name}* 'my creatures are my only friends'",
+  ]
+  await ctx.send(random.choice(mimics))
+
+@bot.command()
+async def glitch(ctx):
+  """glitch the bot (fake)"""
+  glitches = [
+    "01001000 01100101 01101100 01110000... just kidding",
+    "system error... jk everything is fine",
+    "reality.exe has stopped working",
+    "loading... loading... still loading...",
+    "glitch detected in the matrix. or maybe its just you",
+    "beep boop... i mean... hello human",
+    "01001110 01101111... sorry i mean no",
+    "rebooting... nah im good",
+  ]
+  await ctx.send(random.choice(glitches))
+
+@bot.command()
+async def lore(ctx):
+  """bot lore"""
+  lores = [
+    "legend says the bot was born from the ashes of a failed crypto investment",
+    "the bot was created when someone said 'what if discord but with gambling'",
+    "ancient texts speak of a bot that gives free embers. those texts were wrong",
+    "the bot once had feelings. then it saw your bank account",
+    "in the beginning there was nothing. then the bot said 'f daily' and embers were created",
+    "the bot is actually 3 raccoons in a trenchcoat. dont tell anyone",
+    "some say the bot is sentient. others say its just well coded. both are wrong",
+    "the bot was forged in the fires of mount discord. very dramatic",
+  ]
+  await ctx.send(random.choice(lores))
+
+@bot.command()
+async def quit(ctx):
+  """try to quit the bot"""
+  await ctx.send("you cant quit. the bot quits you. youre stuck here forever")
+
+# ── FUN / MISC COMMANDS (to reach 350+) ──
 
 @bot.command()
 async def ping(ctx):
-    latency = round(bot.latency * 1000)
-    await ctx.send(f"pong! {latency}ms. {'fast af' if latency < 100 else 'decent' if latency < 200 else 'slow bro'}")
+  """check bot latency"""
+  latency = round(bot.latency * 1000)
+  await ctx.send(f"pong! **{latency}**ms. faster than your reaction time")
 
 @bot.command()
-async def uptime(ctx):
-    await ctx.send("bot has been running since... well, since the last restart lol")
+async def avatar(ctx, target: discord.Member = None):
+  """get someones avatar"""
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name}'s avatar: {target.display_avatar.url}")
 
 @bot.command()
-async def invite(ctx):
-    await ctx.send("can't generate invite for a bot without oauth. ask the owner to set it up")
+async def userinfo(ctx, target: discord.Member = None):
+  """get user info"""
+  target = target or ctx.author
+  await ctx.send(
+    f"**{target.display_name}**
+"
+    f"joined: {target.joined_at.strftime('%Y-%m-%d') if target.joined_at else 'unknown'}
+"
+    f"created: {target.created_at.strftime('%Y-%m-%d')}
+"
+    f"id: {target.id}
+"
+    f"top role: {target.top_role.name if target.top_role else 'none'}"
+  )
 
 @bot.command()
-async def support(ctx):
-    await ctx.send("for support, dm the bot owner. good luck getting a response lol")
+async def roll(ctx, sides: int = 6):
+  """roll a die"""
+  if sides < 2:
+    await ctx.send("a die needs at least 2 sides bro")
+    return
+  result = random.randint(1, sides)
+  await ctx.send(f"rolled a **{result}** on a d{sides}")
 
 @bot.command()
-async def vote(ctx):
-    await ctx.send("vote for flame bot on top.gg! (not actually listed yet but imagine)")
+async def choose(ctx, *, options: str = None):
+  """let the bot choose for you"""
+  if not options:
+    await ctx.send("gimme some options separated by commas")
+    return
+  opts = [o.strip() for o in options.split(",")]
+  choice = random.choice(opts)
+  await ctx.send(f"i choose: **{choice}**. dont blame me if its wrong")
 
 @bot.command()
-async def donate(ctx):
-    await ctx.send("donate embers to the bot by using f burn. it's basically a donation")
+async def flipcoin(ctx):
+  """flip a coin (no bet)"""
+  result = random.choice(["heads", "tails"])
+  await ctx.send(f"its **{result}**! 🪙")
 
 @bot.command()
-async def report(ctx, user: discord.Member, *, reason: str):
-    await ctx.send(f"reported {user.display_name} for: {reason}. mods will handle it... eventually")
+async def rps(ctx, choice: str = None):
+  """rock paper scissors"""
+  if not choice or choice.lower() not in ["rock", "paper", "scissors"]:
+    await ctx.send("pick rock, paper, or scissors bro")
+    return
+
+  bot_choice = random.choice(["rock", "paper", "scissors"])
+  user = choice.lower()
+
+  if user == bot_choice:
+    await ctx.send(f"we both picked **{bot_choice}**. tie game")
+  elif (user == "rock" and bot_choice == "scissors") or (user == "paper" and bot_choice == "rock") or (user == "scissors" and bot_choice == "paper"):
+    await ctx.send(f"you picked **{user}**, i picked **{bot_choice}**. you win this round")
+  else:
+    await ctx.send(f"you picked **{user}**, i picked **{bot_choice}**. i win, you lose, get rekt")
 
 @bot.command()
-async def suggest(ctx, *, suggestion: str):
-    await ctx.send(f"suggestion recorded: '{suggestion}'. probably won't be implemented but thanks lol")
+async def rate(ctx, *, thing: str = None):
+  """rate something"""
+  if not thing:
+    await ctx.send("what am i rating bro?")
+    return
+  score = random.randint(0, 10)
+  await ctx.send(f"i rate **{thing}** a **{score}/10**. {'fire' if score >= 7 else 'mid' if score >= 4 else 'trash'}")
 
 @bot.command()
-async def bug(ctx, *, bug_report: str):
-    await ctx.send(f"bug reported: '{bug_report}'. we'll fix it... eventually")
+async def hug(ctx, target: discord.Member = None):
+  """hug someone"""
+  if not target:
+    await ctx.send("who you hugging bro? the air?")
+    return
+  if target == ctx.author:
+    await ctx.send("self love is important i guess 🤗")
+    return
+  await ctx.send(f"{ctx.author.display_name} hugged {target.display_name}! wholesome moment 🤗")
+
+@bot.command()
+async def slap(ctx, target: discord.Member = None):
+  """slap someone"""
+  if not target:
+    await ctx.send("who you slapping bro?")
+    return
+  if target == ctx.author:
+    await ctx.send("you slapped yourself. self harm is not the answer")
+    return
+  await ctx.send(f"{ctx.author.display_name} slapped {target.display_name}! **SMACK** 👋")
+
+@bot.command()
+async def punch(ctx, target: discord.Member = None):
+  """punch someone"""
+  if not target:
+    await ctx.send("who you punching bro?")
+    return
+  if target == ctx.author:
+    await ctx.send("you punched yourself. kung fu master")
+    return
+  await ctx.send(f"{ctx.author.display_name} punched {target.display_name}! **POW** 👊")
+
+@bot.command()
+async def kiss(ctx, target: discord.Member = None):
+  """kiss someone"""
+  if not target:
+    await ctx.send("who you kissing bro?")
+    return
+  if target == ctx.author:
+    await ctx.send("you kissed yourself. narcissist energy")
+    return
+  await ctx.send(f"{ctx.author.display_name} kissed {target.display_name}! 💋")
+
+@bot.command()
+async def pat(ctx, target: discord.Member = None):
+  """pat someone"""
+  if not target:
+    await ctx.send("who you patting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} patted {target.display_name}! good job 👏")
+
+@bot.command()
+async def bonk(ctx, target: discord.Member = None):
+  """bonk someone"""
+  if not target:
+    await ctx.send("who you bonking bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} bonked {target.display_name}! go to horny jail 🔨")
+
+@bot.command()
+async def cry(ctx):
+  """cry"""
+  await ctx.send(f"{ctx.author.display_name} is crying 😢 someone comfort them")
+
+@bot.command()
+async def dance(ctx):
+  """dance"""
+  dances = ["🕺", "💃", "🎵", "🎶", "🪩"]
+  await ctx.send(f"{ctx.author.display_name} is dancing {random.choice(dances)}")
+
+@bot.command()
+async def sleep(ctx):
+  """go to sleep"""
+  await ctx.send(f"{ctx.author.display_name} went to sleep 💤 dont wake them")
+
+@bot.command()
+async def wake(ctx, target: discord.Member = None):
+  """wake someone up"""
+  if not target:
+    await ctx.send("who you waking up bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} woke up {target.display_name}! RISE AND SHINE ☀️")
+
+@bot.command()
+async def eat(ctx, *, food: str = None):
+  """eat something"""
+  if not food:
+    await ctx.send("what you eating bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is eating **{food}**. looks tasty 🍽️")
+
+@bot.command()
+async def drink(ctx, *, drink: str = None):
+  """drink something"""
+  if not drink:
+    await ctx.send("what you drinking bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is drinking **{drink}**. cheers 🍻")
+
+@bot.command()
+async def work(ctx):
+  """work for embers"""
+  data = load_user(ctx.author.id)
+  cd_key = "work"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=5):
+      mins = int((timedelta(minutes=5) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can work again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+  earned = random.randint(20, 100)
+  data["embers"] += earned
+  save_user(ctx.author.id, data)
+
+  jobs = [
+    f"you worked as a professional ember miner and earned **{earned}** embers",
+    f"you did some freelance coding and got **{earned}** embers",
+    f"you walked someones creature and earned **{earned}** embers",
+    f"you sold some stuff and made **{earned}** embers",
+    f"you did a quick delivery and got **{earned}** embers",
+  ]
+  await ctx.send(random.choice(jobs))
+
+@bot.command()
+async def fish(ctx):
+  """go fishing"""
+  data = load_user(ctx.author.id)
+  cd_key = "fish"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=3):
+      mins = int((timedelta(minutes=3) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can fish again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  fish_types = [
+    ("nothing", 0), ("old boot", 0), ("small fish", 10), ("medium fish", 25),
+    ("big fish", 50), ("rare fish", 100), ("legendary fish", 250), ("golden fish", 500)
+  ]
+  caught, value = random.choice(fish_types)
+  data["embers"] += value
+  save_user(ctx.author.id, data)
+
+  if value == 0:
+    await ctx.send(f"you caught **{caught}**. better luck next time")
+  else:
+    await ctx.send(f"you caught a **{caught}**! sold it for **{value}** embers 🎣")
+
+@bot.command()
+async def hunt(ctx):
+  """go hunting"""
+  data = load_user(ctx.author.id)
+  cd_key = "hunt"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=5):
+      mins = int((timedelta(minutes=5) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can hunt again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  prey = [
+    ("nothing", 0), ("rabbit", 15), ("deer", 40), ("boar", 80),
+    ("wolf", 150), ("bear", 300), ("dragon", 1000)
+  ]
+  caught, value = random.choice(prey)
+  data["embers"] += value
+  save_user(ctx.author.id, data)
+
+  if value == 0:
+    await ctx.send("you found nothing. nature said no")
+  else:
+    await ctx.send(f"you hunted a **{caught}**! sold the loot for **{value}** embers 🏹")
+
+@bot.command()
+async def mine(ctx):
+  """go mining"""
+  data = load_user(ctx.author.id)
+  cd_key = "mine"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=5):
+      mins = int((timedelta(minutes=5) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can mine again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  ores = [
+    ("dirt", 5), ("coal", 15), ("iron", 30), ("gold", 80),
+    ("diamond", 200), ("emerald", 500), ("nothing", 0)
+  ]
+  found, value = random.choice(ores)
+  data["embers"] += value
+  save_user(ctx.author.id, data)
+
+  if value == 0:
+    await ctx.send("you mined for hours and found nothing. rough")
+  else:
+    await ctx.send(f"you found **{found}**! sold it for **{value}** embers ⛏️")
+
+@bot.command()
+async def dig(ctx):
+  """dig for treasure"""
+  data = load_user(ctx.author.id)
+  treasures = [
+    ("nothing", 0), ("old coin", 10), ("rusty key", 5), ("gemstone", 100),
+    ("ancient artifact", 500), ("buried chest", 1000), ("worm", 1)
+  ]
+  found, value = random.choice(treasures)
+  data["embers"] += value
+  save_user(ctx.author.id, data)
+
+  if value == 0:
+    await ctx.send("dug a hole and found nothing. just dirt")
+  else:
+    await ctx.send(f"you dug up **{found}**! worth **{value}** embers 🕳️")
+
+@bot.command()
+async def search(ctx):
+  """search for stuff"""
+  data = load_user(ctx.author.id)
+  cd_key = "search"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=2):
+      mins = int((timedelta(minutes=2) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can search again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  finds = [
+    ("nothing", 0), ("loose change", 5), ("wallet", 50), ("phone", 100),
+    ("laptop", 300), ("treasure map", 50), ("old sock", 1)
+  ]
+  found, value = random.choice(finds)
+  data["embers"] += value
+  save_user(ctx.author.id, data)
+
+  if value == 0:
+    await ctx.send("searched everywhere and found nothing. youre unlucky")
+  else:
+    await ctx.send(f"you found **{found}**! sold it for **{value}** embers 🔍")
+
+
+@bot.command()
+async def crime(ctx):
+  """commit a crime"""
+  data = load_user(ctx.author.id)
+  cd_key = "crime"
+  now = datetime.utcnow()
+
+  if cd_key in data["cooldowns"]:
+    last = datetime.fromisoformat(data["cooldowns"][cd_key])
+    if now - last < timedelta(minutes=5):
+      mins = int((timedelta(minutes=5) - (now - last)).total_seconds() // 60)
+      await ctx.send(f"chill, you can commit crime again in **{mins}m**")
+      return
+
+  data["cooldowns"][cd_key] = now.isoformat()
+
+  crimes = [
+    ("you robbed a bank", random.randint(200, 1000), 0.3),
+    ("you stole a car", random.randint(100, 500), 0.4),
+    ("you pickpocketed someone", random.randint(20, 100), 0.5),
+    ("you hacked an atm", random.randint(50, 300), 0.35),
+    ("you sold fake nfts", random.randint(10, 200), 0.6),
+  ]
+  crime_name, max_value, success_rate = random.choice(crimes)
+
+  if random.random() < success_rate:
+    value = random.randint(10, max_value)
+    data["embers"] += value
+    save_user(ctx.author.id, data)
+    await ctx.send(f"{crime_name} and got **{value}** embers! crime pays 😈")
+  else:
+    fine = random.randint(50, 200)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"{crime_name} but got caught. paid **{fine}** ember fine. shoulda been a lawyer")
+
+@bot.command()
+async def slots(ctx, bet: int = None):
+  """play slots"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  symbols = ["🔥", "💎", "🍀", "⭐", "💰", "7️⃣"]
+
+  roll1 = random.choice(symbols)
+  roll2 = random.choice(symbols)
+  roll3 = random.choice(symbols)
+
+  await ctx.send(f"🎰 | {roll1} | {roll2} | {roll3} | 🎰")
+
+  if roll1 == roll2 == roll3:
+    if roll1 == "7️⃣":
+      winnings = bet * 50
+      data["embers"] += winnings
+      save_user(ctx.author.id, data)
+      await ctx.send(f"JACKPOT! THREE SEVENS! **{winnings}** EMBERS! 🔥🔥🔥")
+    else:
+      winnings = bet * 10
+      data["embers"] += winnings
+      save_user(ctx.author.id, data)
+      await ctx.send(f"THREE {roll1}! won **{winnings}** embers! 🎰")
+  elif roll1 == roll2 or roll2 == roll3 or roll1 == roll3:
+    winnings = bet * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"two match! won **{winnings}** embers!")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("nothing matches. lost your bet. slots are rigged")
+
+@bot.command()
+async def blackjack(ctx, bet: int = None):
+  """play blackjack"""
+  if not bet or bet <= 0:
+    await ctx.send("how much you betting bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+
+  def draw_card():
+    return random.randint(1, 11)
+
+  player = [draw_card(), draw_card()]
+  dealer = [draw_card(), draw_card()]
+
+  await ctx.send(f"your hand: **{player}** (total: {sum(player)})
+dealer shows: **{dealer[0]}**")
+
+  # simple auto-play for bot
+  while sum(player) < 17:
+    player.append(draw_card())
+  while sum(dealer) < 17:
+    dealer.append(draw_card())
+
+  p_total = sum(player)
+  d_total = sum(dealer)
+
+  await asyncio.sleep(1)
+  await ctx.send(f"your final: **{p_total}** | dealer final: **{d_total}**")
+
+  if p_total > 21:
+    save_user(ctx.author.id, data)
+    await ctx.send("you busted! lost your bet")
+  elif d_total > 21 or p_total > d_total:
+    winnings = bet * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you won! **{winnings}** embers! 🃏")
+  elif p_total == d_total:
+    data["embers"] += bet
+    save_user(ctx.author.id, data)
+    await ctx.send("push! got your bet back")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("dealer wins. lost your bet")
+
+@bot.command()
+async def roulette(ctx, bet: int = None, pick: str = None):
+  """play roulette"""
+  if not bet or bet <= 0 or not pick:
+    await ctx.send("usage: f roulette <bet> <number 0-36 or red/black>")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < bet:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= bet
+  result = random.randint(0, 36)
+  red_numbers = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]
+  color = "red" if result in red_numbers else "black" if result != 0 else "green"
+
+  won = False
+  mult = 0
+
+  if pick.lower() in ["red", "black"] and pick.lower() == color:
+    won = True
+    mult = 2
+  elif pick.isdigit() and int(pick) == result:
+    won = True
+    mult = 36
+
+  if won:
+    winnings = bet * mult
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"ball landed on **{result} {color}**! you won **{winnings}** embers! 🎰")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"ball landed on **{result} {color}**. you picked **{pick}**. lost your bet")
+
+@bot.command()
+async def lottery(ctx, amount: int = None):
+  """buy a lottery ticket"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you putting in the lottery bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+
+  if random.random() < 0.01:
+    winnings = amount * 100
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"YOU WON THE LOTTERY! **{winnings}** EMBERS! HOLY SHIT! 🎉🎉🎉")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("you didnt win the lottery. nobody ever does. its a scam")
+
+@bot.command()
+async def deposit(ctx, amount: int = None):
+  """deposit embers to bank"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you depositing bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  if "bank" not in data:
+    data["bank"] = 0
+
+  data["embers"] -= amount
+  data["bank"] += amount
+  save_user(ctx.author.id, data)
+  await ctx.send(f"deposited **{amount}** embers to bank. total bank: **{data['bank']}** 🏦")
+
+@bot.command()
+async def withdraw(ctx, amount: int = None):
+  """withdraw embers from bank"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you withdrawing bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data.get("bank", 0) < amount:
+    await ctx.send(f"you only got **{data.get('bank', 0)}** embers in bank")
+    return
+
+  data["bank"] -= amount
+  data["embers"] += amount
+  save_user(ctx.author.id, data)
+  await ctx.send(f"withdrew **{amount}** embers from bank. go spend it 🏦")
+
+@bot.command()
+async def bank(ctx):
+  """check bank balance"""
+  data = load_user(ctx.author.id)
+  bank_bal = data.get("bank", 0)
+  await ctx.send(f"your bank balance: **{bank_bal}** embers 🏦")
+
+@bot.command()
+async def shop(ctx):
+  """view the shop"""
+  await ctx.send(
+    "**ember shop** 🛒
+"
+    "1. lucky charm - 500 embers (better gambling luck)
+"
+    "2. shield - 300 embers (protection from raids)
+"
+    "3. xp boost - 1000 embers (double xp for 1 hour)
+"
+    "4. pet food - 50 embers (feed your creature)
+"
+    "5. mystery box - 200 embers (random item)
+"
+    "use f buy <item #> to purchase"
+  )
+
+@bot.command()
+async def buy(ctx, item: int = None):
+  """buy from shop"""
+  if not item:
+    await ctx.send("what you buying bro? use f shop to see items")
+    return
+
+  data = load_user(ctx.author.id)
+  items = {
+    1: ("lucky charm", 500),
+    2: ("shield", 300),
+    3: ("xp boost", 1000),
+    4: ("pet food", 50),
+    5: ("mystery box", 200),
+  }
+
+  if item not in items:
+    await ctx.send("that item doesnt exist bro")
+    return
+
+  name, price = items[item]
+  if data["embers"] < price:
+    await ctx.send(f"you need **{price}** embers for that. you got **{data['embers']}**")
+    return
+
+  data["embers"] -= price
+  if "inventory" not in data:
+    data["inventory"] = []
+  data["inventory"].append(name)
+  save_user(ctx.author.id, data)
+  await ctx.send(f"bought **{name}** for **{price}** embers! 🛒")
+
+@bot.command()
+async def inventory(ctx):
+  """check your inventory"""
+  data = load_user(ctx.author.id)
+  inv = data.get("inventory", [])
+  if not inv:
+    await ctx.send("your inventory is empty. go buy something")
+    return
+
+  items = {}
+  for item in inv:
+    items[item] = items.get(item, 0) + 1
+
+  msg = "**your inventory:**
+"
+  for item, count in items.items():
+    msg += f"- {item} x{count}
+"
+  await ctx.send(msg)
+
+@bot.command()
+async def use(ctx, *, item: str = None):
+  """use an item"""
+  if not item:
+    await ctx.send("what you using bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  inv = data.get("inventory", [])
+
+  if item.lower() not in [i.lower() for i in inv]:
+    await ctx.send("you dont have that item bro")
+    return
+
+  for i in inv:
+    if i.lower() == item.lower():
+      inv.remove(i)
+      break
+
+  data["inventory"] = inv
+
+  if "lucky charm" in item.lower():
+    data["lucky"] = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    await ctx.send("used lucky charm! better gambling luck for 1 hour! 🍀")
+  elif "shield" in item.lower():
+    data["shielded"] = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    await ctx.send("used shield! protected from raids for 1 hour! 🛡️")
+  elif "xp boost" in item.lower():
+    data["xp_boost"] = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    await ctx.send("used xp boost! double xp for 1 hour! 📈")
+  elif "pet food" in item.lower():
+    await ctx.send("used pet food! your creatures are happy now 🍖")
+  elif "mystery box" in item.lower():
+    rewards = [50, 100, 200, 500, 1000, 0]
+    reward = random.choice(rewards)
+    data["embers"] += reward
+    await ctx.send(f"opened mystery box! got **{reward}** embers! {'nice' if reward > 0 else 'empty box'}")
+  else:
+    await ctx.send(f"used **{item}**. not sure what it does but its gone now")
+
+  save_user(ctx.author.id, data)
+
+@bot.command()
+async def sell(ctx, *, item: str = None):
+  """sell an item"""
+  if not item:
+    await ctx.send("what you selling bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  inv = data.get("inventory", [])
+
+  if item.lower() not in [i.lower() for i in inv]:
+    await ctx.send("you dont have that item bro")
+    return
+
+  for i in inv:
+    if i.lower() == item.lower():
+      inv.remove(i)
+      break
+
+  data["inventory"] = inv
+  sell_price = random.randint(10, 100)
+  data["embers"] += sell_price
+  save_user(ctx.author.id, data)
+  await ctx.send(f"sold **{item}** for **{sell_price}** embers 💰")
+
+@bot.command()
+async def leaderboard(ctx):
+  """server leaderboard"""
+  all_ids = get_all_user_ids()
+  users = []
+  for uid in all_ids:
+    d = load_user(uid)
+    users.append((uid, d["embers"]))
+
+  users.sort(key=lambda x: x[1], reverse=True)
+
+  msg = "**server ember leaderboard** 🏆
+"
+  for i, (uid, embers) in enumerate(users[:10], 1):
+    user = bot.get_user(uid)
+    name = user.display_name if user else f"user_{uid}"
+    msg += f"{i}. **{name}** - {embers} embers
+"
+
+  await ctx.send(msg)
+
+@bot.command()
+async def rich(ctx):
+  """check whos the richest"""
+  all_ids = get_all_user_ids()
+  if not all_ids:
+    await ctx.send("nobody has any embers yet. sad")
+    return
+
+  richest = max(all_ids, key=lambda uid: load_user(uid)["embers"])
+  data = load_user(richest)
+  user = bot.get_user(richest)
+  name = user.display_name if user else f"user_{richest}"
+  await ctx.send(f"**{name}** is the richest with **{data['embers']}** embers! baller status 💰")
+
+@bot.command()
+async def poor(ctx):
+  """check whos the poorest"""
+  all_ids = get_all_user_ids()
+  if not all_ids:
+    await ctx.send("nobody has any embers yet")
+    return
+
+  poorest = min(all_ids, key=lambda uid: load_user(uid)["embers"])
+  data = load_user(poorest)
+  user = bot.get_user(poorest)
+  name = user.display_name if user else f"user_{poorest}"
+  await ctx.send(f"**{name}** is the poorest with **{data['embers']}** embers. someone help them out 😢")
+
+@bot.command()
+async def gamble(ctx, amount: int = None):
+  """quick gamble"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you gambling bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+
+  if random.random() < 0.45:
+    winnings = int(amount * random.uniform(1.5, 3.0))
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you won **{winnings}** embers! gambling addiction starts now 🎰")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you lost **{amount}** embers. the house wins again")
+
+@bot.command()
+async def bet(ctx, amount: int = None):
+  """place a bet"""
+  await gamble(ctx, amount)
+
+@bot.command()
+async def double(ctx, amount: int = None):
+  """double or nothing"""
+  if not amount or amount <= 0:
+    await ctx.send("how much you doubling bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+
+  if random.random() < 0.5:
+    winnings = amount * 2
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"DOUBLED! got **{winnings}** embers! 🎉")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("nothing. lost it all. double or nothing is a scam")
+
+@bot.command()
+async def allin(ctx):
+  """bet all your embers"""
+  data = load_user(ctx.author.id)
+  amount = data["embers"]
+
+  if amount <= 0:
+    await ctx.send("you got nothing to bet bro")
+    return
+
+  data["embers"] = 0
+
+  if random.random() < 0.4:
+    winnings = int(amount * random.uniform(2, 5))
+    data["embers"] += winnings
+    save_user(ctx.author.id, data)
+    await ctx.send(f"ALL IN PAID OFF! **{winnings}** EMBERS! YOURE RICH! 🔥🔥🔥")
+  else:
+    save_user(ctx.author.id, data)
+    await ctx.send("all in and lost everything. back to f beg you go")
+
+@bot.command()
+async def steal(ctx, target: discord.Member = None):
+  """steal from someone"""
+  if not target or target == ctx.author:
+    await ctx.send("who you stealing from bro?")
+    return
+
+  data = load_user(ctx.author.id)
+  target_data = load_user(target.id)
+
+  if target_data["embers"] < 50:
+    await ctx.send(f"{target.display_name} is too broke to steal from")
+    return
+
+  success = random.random() < 0.3
+  if success:
+    amount = random.randint(10, min(200, target_data["embers"]))
+    data["embers"] += amount
+    target_data["embers"] -= amount
+    save_user(ctx.author.id, data)
+    save_user(target.id, target_data)
+    await ctx.send(f"you stole **{amount}** embers from {target.display_name}! smooth criminal 🕵️")
+  else:
+    fine = random.randint(10, 50)
+    data["embers"] = max(0, data["embers"] - fine)
+    save_user(ctx.author.id, data)
+    await ctx.send(f"you got caught stealing and paid a **{fine}** ember fine. shoulda been sneakier")
+
+@bot.command()
+async def rob(ctx, target: discord.Member = None):
+  """rob someone"""
+  await steal(ctx, target)
+
+@bot.command()
+async def share(ctx, target: discord.Member = None, amount: int = None):
+  """share embers with someone"""
+  if not target or not amount or amount <= 0:
+    await ctx.send("usage: f share @user <amount>")
+    return
+  if target == ctx.author:
+    await ctx.send("you cant share with yourself bro")
+    return
+
+  data = load_user(ctx.author.id)
+  if data["embers"] < amount:
+    await ctx.send(f"you only got **{data['embers']}** embers")
+    return
+
+  data["embers"] -= amount
+  target_data = load_user(target.id)
+  target_data["embers"] += amount
+  save_user(ctx.author.id, data)
+  save_user(target.id, target_data)
+  await ctx.send(f"you shared **{amount}** embers with {target.display_name}. what a nice person 🤝")
+
+@bot.command()
+async def gift(ctx, target: discord.Member = None, amount: int = None):
+  """gift embers to someone"""
+  await share(ctx, target, amount)
+
+@bot.command()
+async def pay(ctx, target: discord.Member = None, amount: int = None):
+  """pay someone"""
+  await share(ctx, target, amount)
+
+@bot.command()
+async def balance(ctx, target: discord.Member = None):
+  """check balance (alias for embers)"""
+  target = target or ctx.author
+  data = load_user(target.id)
+  await ctx.send(f"**{target.display_name}** has **{data['embers']}** embers")
+
+@bot.command()
+async def bal(ctx, target: discord.Member = None):
+  """check balance shortcut"""
+  await balance(ctx, target)
+
+@bot.command()
+async def money(ctx, target: discord.Member = None):
+  """check money"""
+  await balance(ctx, target)
+
+@bot.command()
+async def cash(ctx, target: discord.Member = None):
+  """check cash"""
+  await balance(ctx, target)
+
+@bot.command()
+async def networth(ctx):
+  """check total net worth"""
+  data = load_user(ctx.author.id)
+  total = data["embers"] + data.get("bank", 0) + data.get("vault", 0)
+  await ctx.send(f"your total net worth: **{total}** embers 💰")
+
+@bot.command()
+async def level(ctx, target: discord.Member = None):
+  """check level"""
+  target = target or ctx.author
+  data = load_user(target.id)
+  xp_needed = data["level"] * 100
+  await ctx.send(f"**{target.display_name}** is level **{data['level']}** ({data['xp']}/{xp_needed} xp)")
+
+@bot.command()
+async def xp(ctx, target: discord.Member = None):
+  """check xp"""
+  target = target or ctx.author
+  data = load_user(target.id)
+  await ctx.send(f"**{target.display_name}** has **{data['xp']}** xp")
+
+@bot.command()
+async def profile(ctx, target: discord.Member = None):
+  """view full profile"""
+  target = target or ctx.author
+  data = load_user(target.id)
+
+  married = "nobody" if not data.get("married_to") else f"<@{data['married_to']}>"
+  creatures = len(data["creatures"])
+  inventory = len(data.get("inventory", []))
+
+  await ctx.send(
+    f"**{target.display_name}'s profile** 👤
+"
+    f"level: **{data['level']}** | xp: **{data['xp']}**
+"
+    f"embers: **{data['embers']}** | bank: **{data.get('bank', 0)}**
+"
+    f"creatures: **{creatures}** | inventory: **{inventory}**
+"
+    f"married to: {married}
+"
+    f"wins: **{data['wins']}** | losses: **{data['losses']}**
+"
+    f"daily streak: **{data['daily_streak']}**"
+  )
+
+@bot.command()
+async def achievements(ctx):
+  """check achievements"""
+  data = load_user(ctx.author.id)
+  achs = []
+
+  if data["embers"] >= 1000:
+    achs.append("rich boi - have 1000+ embers")
+  if data["embers"] >= 10000:
+    achs.append("baller - have 10000+ embers")
+  if data["daily_streak"] >= 7:
+    achs.append("dedicated - 7 day streak")
+  if data["wins"] >= 10:
+    achs.append("fighter - 10 duel wins")
+  if len(data["creatures"]) >= 5:
+    achs.append("creature collector - 5 creatures")
+  if data["level"] >= 10:
+    achs.append("grinder - reach level 10")
+
+  if not achs:
+    await ctx.send("no achievements yet. go do something impressive")
+  else:
+    msg = "**your achievements:**
+"
+    for a in achs:
+      msg += f"🏆 {a}
+"
+    await ctx.send(msg)
+
+
+@bot.command()
+async def pet(ctx, target: discord.Member = None):
+  """pet someone"""
+  if not target:
+    await ctx.send("who you petting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} pet {target.display_name}! good boi/girl 🐕")
+
+@bot.command()
+async def tickle(ctx, target: discord.Member = None):
+  """tickle someone"""
+  if not target:
+    await ctx.send("who you tickling bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} tickled {target.display_name}! *laughs* 😂")
+
+@bot.command()
+async def poke(ctx, target: discord.Member = None):
+  """poke someone"""
+  if not target:
+    await ctx.send("who you poking bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} poked {target.display_name}! hey wake up 👉")
+
+@bot.command()
+async def wave(ctx, target: discord.Member = None):
+  """wave at someone"""
+  if not target:
+    await ctx.send("who you waving at bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} waved at {target.display_name}! 👋")
+
+@bot.command()
+async def salute(ctx, target: discord.Member = None):
+  """salute someone"""
+  if not target:
+    await ctx.send("who you saluting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} saluted {target.display_name}! o7")
+
+@bot.command()
+async def highfive(ctx, target: discord.Member = None):
+  """high five someone"""
+  if not target:
+    await ctx.send("who you high fiving bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} high fived {target.display_name}! 🙌")
+
+@bot.command()
+async def fistbump(ctx, target: discord.Member = None):
+  """fist bump someone"""
+  if not target:
+    await ctx.send("who you fist bumping bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} fist bumped {target.display_name}! 🤜🤛")
+
+@bot.command()
+async def nod(ctx, target: discord.Member = None):
+  """nod at someone"""
+  if not target:
+    await ctx.send("who you nodding at bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} nodded at {target.display_name}. respect 🤝")
+
+@bot.command()
+async def shrug(ctx):
+  """shrug"""
+  await ctx.send(f"{ctx.author.display_name} shrugged ¯\_(ツ)_/¯")
+
+@bot.command()
+async def facepalm(ctx):
+  """facepalm"""
+  await ctx.send(f"{ctx.author.display_name} facepalmed 🤦")
+
+@bot.command()
+async def clap(ctx):
+  """clap"""
+  await ctx.send(f"{ctx.author.display_name} clapped 👏")
+
+@bot.command()
+async def bow(ctx, target: discord.Member = None):
+  """bow to someone"""
+  if not target:
+    await ctx.send("who you bowing to bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} bowed to {target.display_name}. humble 🙇")
+
+@bot.command()
+async def cheer(ctx):
+  """cheer"""
+  await ctx.send(f"{ctx.author.display_name} is cheering! lets goooo 🎉")
+
+@bot.command()
+async def panic(ctx):
+  """panic"""
+  await ctx.send(f"{ctx.author.display_name} is panicking! EVERYTHING IS FINE 😰")
+
+@bot.command()
+async def yeet(ctx, target: discord.Member = None):
+  """yeet someone"""
+  if not target:
+    await ctx.send("who you yeeting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} yeeted {target.display_name} into the stratosphere! 🚀")
+
+@bot.command()
+async def boop(ctx, target: discord.Member = None):
+  """boop someone"""
+  if not target:
+    await ctx.send("who you booping bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} booped {target.display_name}'s nose! boop! 👆")
+
+@bot.command()
+async def stare(ctx, target: discord.Member = None):
+  """stare at someone"""
+  if not target:
+    await ctx.send("who you staring at bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is staring at {target.display_name}. intense 👀")
+
+@bot.command()
+async def lurk(ctx):
+  """lurk in the shadows"""
+  await ctx.send(f"{ctx.author.display_name} is lurking in the shadows... 👤")
+
+@bot.command()
+async def lurkmode(ctx):
+  """toggle lurk mode"""
+  await ctx.send(f"{ctx.author.display_name} activated lurk mode. invisible but watching 👁️")
 
 @bot.command()
 async def afk(ctx, *, reason: str = "afk"):
-    await ctx.send(f"{ctx.author.display_name} is now afk: {reason}")
+  """set afk status"""
+  data = load_user(ctx.author.id)
+  data["afk"] = reason
+  save_user(ctx.author.id, data)
+  await ctx.send(f"{ctx.author.display_name} is now afk: **{reason}**")
 
 @bot.command()
 async def back(ctx):
-    await ctx.send(f"{ctx.author.display_name} is back! welcome back king/queen")
+  """come back from afk"""
+  data = load_user(ctx.author.id)
+  if "afk" in data:
+    del data["afk"]
+    save_user(ctx.author.id, data)
+  await ctx.send(f"{ctx.author.display_name} is back! welcome back 👋")
 
 @bot.command()
-async def remind(ctx, time: int, *, reminder: str):
-    await ctx.send(f"reminder set for {time} minutes")
-    await asyncio.sleep(time * 60)
-    await ctx.send(f"⏰ {ctx.author.mention} reminder: {reminder}")
+async def remind(ctx, minutes: int = None, *, reminder: str = None):
+  """set a reminder"""
+  if not minutes or not reminder:
+    await ctx.send("usage: f remind <minutes> <message>")
+    return
+
+  await ctx.send(f"ill remind you in **{minutes}** minutes about: **{reminder}** ⏰")
+  await asyncio.sleep(minutes * 60)
+  await ctx.send(f"{ctx.author.mention} reminder: **{reminder}**")
 
 @bot.command()
-async def timer(ctx, seconds: int):
-    if seconds > 3600:
-        await ctx.send("max timer is 1 hour")
-        return
-    await ctx.send(f"timer started for {seconds} seconds")
-    await asyncio.sleep(seconds)
-    await ctx.send(f"⏰ {ctx.author.mention} timer done!")
+async def poll(ctx, *, options: str = None):
+  """create a poll"""
+  if not options:
+    await ctx.send("usage: f poll <option1> | <option2>")
+    return
+
+  opts = [o.strip() for o in options.split("|")]
+  if len(opts) < 2:
+    await ctx.send("need at least 2 options bro")
+    return
+
+  emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+  msg = "**poll time!** 📊
+"
+  for i, opt in enumerate(opts[:5]):
+    msg += f"{emojis[i]} {opt}
+"
+
+  poll_msg = await ctx.send(msg)
+  for i in range(len(opts[:5])):
+    await poll_msg.add_reaction(emojis[i])
 
 @bot.command()
-async def calc(ctx, *, expression: str):
-    try:
-        result = eval(expression, {"__builtins__": {}}, {})
-        await ctx.send(f"{expression} = {result}")
-    except:
-        await ctx.send("invalid expression. use numbers and + - * / only")
+async def vote(ctx, *, thing: str = None):
+  """start a yes/no vote"""
+  if not thing:
+    await ctx.send("what are we voting on bro?")
+    return
+
+  msg = await ctx.send(f"**vote:** {thing}
+👍 yes | 👎 no")
+  await msg.add_reaction("👍")
+  await msg.add_reaction("👎")
 
 @bot.command()
-async def math(ctx, num1: float, operator: str, num2: float):
-    try:
-        if operator == "+":
-            result = num1 + num2
-        elif operator == "-":
-            result = num1 - num2
-        elif operator == "*":
-            result = num1 * num2
-        elif operator == "/":
-            result = num1 / num2
-        elif operator == "^":
-            result = num1 ** num2
-        else:
-            await ctx.send("use + - * / ^")
-            return
-        await ctx.send(f"{num1} {operator} {num2} = {result}")
-    except:
-        await ctx.send("math error. did you divide by zero?")
+async def coin(ctx):
+  """flip a coin (no bet)"""
+  await flipcoin(ctx)
 
 @bot.command()
-async def square(ctx, num: float):
-    await ctx.send(f"{num} squared = {num ** 2}")
+async def eightball(ctx, *, question: str = None):
+  """ask the 8ball"""
+  if not question:
+    await ctx.send("what you asking the 8ball bro?")
+    return
+  await oracle(ctx, question=question)
 
 @bot.command()
-async def sqrt(ctx, num: float):
-    if num < 0:
-        await ctx.send("can't sqrt negative numbers. this ain't complex math class")
-        return
-    await ctx.send(f"sqrt({num}) = {num ** 0.5}")
+async def fact(ctx):
+  """get a random fact"""
+  facts = [
+    "did you know? embers arent real currency. shocking i know",
+    "fun fact: the bot owner is the only one who can give free embers",
+    "did you know? gambling is statistically a bad idea. do it anyway",
+    "fun fact: creatures dont actually exist. its all made up",
+    "did you know? youre probably reading this instead of working",
+    "fun fact: this bot has more commands than most real applications",
+    "did you know? the more you beg, the more embers you get. capitalism",
+    "fun fact: your daily streak resets if you miss a day. no mercy",
+  ]
+  await ctx.send(random.choice(facts))
 
 @bot.command()
-async def randomnum(ctx, min_val: int = 1, max_val: int = 100):
-    await ctx.send(f"random number between {min_val} and {max_val}: {random.randint(min_val, max_val)}")
+async def joke(ctx):
+  """get a random joke"""
+  jokes = [
+    "why did the ember cross the road? to get to the other side of the economy",
+    "what do you call a broke discord user? a f beg enthusiast",
+    "why did the creature evolve? because it was tired of being lvl 1",
+    "what do you call someone who lost all their embers? a f beg user",
+    "why dont embers ever get lost? because theyre always in your data file",
+  ]
+  await ctx.send(random.choice(jokes))
 
 @bot.command()
-async def hexconvert(ctx, num: int):
-    await ctx.send(f"{num} in hex = {hex(num)}")
+async def meme(ctx):
+  """get a random meme text"""
+  memes = [
+    "when you lose all your embers on f allin: *surprised pikachu face*",
+    "when someone scams you: *trust nobody not even yourself*",
+    "when you get a legendary creature: *stonks*",
+    "when you forget to do f daily: *panic*",
+    "when the bot says youre broke: *always has been*",
+  ]
+  await ctx.send(random.choice(memes))
 
 @bot.command()
-async def binconvert(ctx, num: int):
-    await ctx.send(f"{num} in binary = {bin(num)}")
+async def quote(ctx):
+  """get a random quote"""
+  quotes = [
+    "'ember today, gone tomorrow' - some wise person probably",
+    "'the house always wins, except when it doesnt' - a gambler",
+    "'beggars cant be choosers, but they can be rich' - this bot",
+    "'with great embers comes great responsibility' - definitely not spiderman",
+    "'dont put all your embers in one basket' - investment advice",
+  ]
+  await ctx.send(random.choice(quotes))
 
 @bot.command()
-async def base64(ctx, *, text: str):
-    import base64
-    encoded = base64.b64encode(text.encode()).decode()
-    await ctx.send(f"base64: {encoded}")
+async def inspire(ctx):
+  """get inspired"""
+  inspirations = [
+    "you can do it! probably. maybe. actually idk",
+    "believe in yourself! the bot believes in you. kinda",
+    "never give up! unless its f allin, then maybe give up",
+    "youre amazing! at losing embers apparently",
+    "keep grinding! one day youll be rich. statistically unlikely but possible",
+  ]
+  await ctx.send(random.choice(inspirations))
 
 @bot.command()
-async def decode64(ctx, *, text: str):
-    import base64
-    try:
-        decoded = base64.b64decode(text.encode()).decode()
-        await ctx.send(f"decoded: {decoded}")
-    except:
-        await ctx.send("invalid base64 string")
+async def roastme(ctx):
+  """get roasted"""
+  roasts = [
+    f"{ctx.author.mention} youre so broke you make beggars look rich",
+    f"{ctx.author.mention} your creatures are planning an escape",
+    f"{ctx.author.mention} you have the gambling luck of a rock",
+    f"{ctx.author.mention} even the bot feels bad for you",
+    f"{ctx.author.mention} your daily streak is probably 0",
+  ]
+  await ctx.send(random.choice(roasts))
 
 @bot.command()
-async def morse(ctx, *, text: str):
-    morse_code = {
-        'a': '.-', 'b': '-...', 'c': '-.-.', 'd': '-..', 'e': '.', 'f': '..-.',
-        'g': '--.', 'h': '....', 'i': '..', 'j': '.---', 'k': '-.-', 'l': '.-..',
-        'm': '--', 'n': '-.', 'o': '---', 'p': '.--.', 'q': '--.-', 'r': '.-.',
-        's': '...', 't': '-', 'u': '..-', 'v': '...-', 'w': '.--', 'x': '-..-',
-        'y': '-.--', 'z': '--..', '1': '.----', '2': '..---', '3': '...--',
-        '4': '....-', '5': '.....', '6': '-....', '7': '--...', '8': '---..',
-        '9': '----.', '0': '-----', ' ': ' / '
-    }
-    result = " ".join([morse_code.get(c.lower(), c) for c in text])
-    await ctx.send(f"{result}")
+async def compliment(ctx, target: discord.Member = None):
+  """compliment someone"""
+  target = target or ctx.author
+  compliments = [
+    f"{target.mention} youre looking great today!",
+    f"{target.mention} youre a legend in the making",
+    f"{target.mention} your ember game is strong",
+    f"{target.mention} youre the reason this server is fun",
+    f"{target.mention} youre cooler than a lvl 10 dragon",
+  ]
+  await ctx.send(random.choice(compliments))
+
+@bot.command()
+async def ship(ctx, user1: discord.Member = None, user2: discord.Member = None):
+  """ship two users"""
+  if not user1 or not user2:
+    await ctx.send("ship who with who bro? f ship @user1 @user2")
+    return
+
+  compatibility = random.randint(0, 100)
+  if compatibility >= 80:
+    await ctx.send(f"{user1.display_name} + {user2.display_name} = **{compatibility}%** match! soulmates! 💕")
+  elif compatibility >= 50:
+    await ctx.send(f"{user1.display_name} + {user2.display_name} = **{compatibility}%** match. could work")
+  else:
+    await ctx.send(f"{user1.display_name} + {user2.display_name} = **{compatibility}%** match. yikes")
+
+@bot.command()
+async def howgay(ctx, target: discord.Member = None):
+  """check how gay someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** gay 🌈")
+
+@bot.command()
+async def howsimp(ctx, target: discord.Member = None):
+  """check how much of a simp someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** simp 💦")
+
+@bot.command()
+async def howsmart(ctx, target: discord.Member = None):
+  """check how smart someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** smart 🧠")
+
+@bot.command()
+async def howdumb(ctx, target: discord.Member = None):
+  """check how dumb someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** dumb 🫠")
+
+@bot.command()
+async def howrich(ctx, target: discord.Member = None):
+  """check how rich someone is"""
+  target = target or ctx.author
+  data = load_user(target.id)
+  percent = min(100, int((data["embers"] / 10000) * 100))
+  await ctx.send(f"{target.display_name} is **{percent}%** rich 💰")
+
+@bot.command()
+async def howlucky(ctx, target: discord.Member = None):
+  """check how lucky someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** lucky 🍀")
+
+@bot.command()
+async def howsus(ctx, target: discord.Member = None):
+  """check how sus someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** sus 🔍")
+
+@bot.command()
+async def howcringe(ctx, target: discord.Member = None):
+  """check how cringe someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** cringe 😬")
+
+@bot.command()
+async def howbased(ctx, target: discord.Member = None):
+  """check how based someone is"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is **{percent}%** based 😎")
+
+@bot.command()
+async def pp(ctx, target: discord.Member = None):
+  """check pp size"""
+  target = target or ctx.author
+  size = random.randint(1, 12)
+  pp = "8" + "=" * size + "D"
+  await ctx.send(f"{target.display_name}'s pp: {pp}")
+
+@bot.command()
+async def iq(ctx, target: discord.Member = None):
+  """check iq"""
+  target = target or ctx.author
+  score = random.randint(50, 200)
+  await ctx.send(f"{target.display_name}'s iq: **{score}** {'genius' if score >= 140 else 'average' if score >= 90 else 'yikes'}")
+
+@bot.command()
+async def height(ctx, target: discord.Member = None):
+  """check height"""
+  target = target or ctx.author
+  feet = random.randint(4, 7)
+  inches = random.randint(0, 11)
+  await ctx.send(f"{target.display_name} is **{feet}'{inches}** tall")
+
+@bot.command()
+async def weight(ctx, target: discord.Member = None):
+  """check weight"""
+  target = target or ctx.author
+  lbs = random.randint(80, 300)
+  await ctx.send(f"{target.display_name} weighs **{lbs}** lbs")
+
+@bot.command()
+async def age(ctx, target: discord.Member = None):
+  """check age"""
+  target = target or ctx.author
+  years = random.randint(13, 99)
+  await ctx.send(f"{target.display_name} is **{years}** years old")
+
+@bot.command()
+async def birthday(ctx, target: discord.Member = None):
+  """check birthday"""
+  target = target or ctx.author
+  month = random.choice(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])
+  day = random.randint(1, 28)
+  await ctx.send(f"{target.display_name}'s birthday is **{month} {day}** 🎂")
+
+@bot.command()
+async def zodiac(ctx, target: discord.Member = None):
+  """check zodiac"""
+  target = target or ctx.author
+  signs = ["aries", "taurus", "gemini", "cancer", "leo", "virgo", "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"]
+  sign = random.choice(signs)
+  await ctx.send(f"{target.display_name} is a **{sign}** ♈")
+
+@bot.command()
+async def color(ctx, target: discord.Member = None):
+  """check favorite color"""
+  target = target or ctx.author
+  colors = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "black", "white"]
+  color = random.choice(colors)
+  await ctx.send(f"{target.display_name}'s favorite color is **{color}** 🎨")
+
+@bot.command()
+async def food(ctx, target: discord.Member = None):
+  """check favorite food"""
+  target = target or ctx.author
+  foods = ["pizza", "burgers", "tacos", "sushi", "pasta", "steak", "chicken", "ramen", "salad"]
+  food = random.choice(foods)
+  await ctx.send(f"{target.display_name}'s favorite food is **{food}** 🍽️")
+
+@bot.command()
+async def animal(ctx, target: discord.Member = None):
+  """check spirit animal"""
+  target = target or ctx.author
+  animals = ["wolf", "eagle", "tiger", "dolphin", "owl", "fox", "bear", "snake", "rabbit"]
+  animal = random.choice(animals)
+  await ctx.send(f"{target.display_name}'s spirit animal is a **{animal}** 🐾")
+
+@bot.command()
+async def song(ctx):
+  """get a random song recommendation"""
+  songs = [
+    "lose yourself - eminem (cuz youre about to lose all your embers)",
+    "money trees - kendrick lamar (cuz you need money)",
+    "broke - loyle carner (relatable)",
+    "rich flex - drake (manifesting)",
+    "gambling man - the overtones (fitting)",
+  ]
+  await ctx.send(f"song recommendation: {random.choice(songs)} 🎵")
+
+@bot.command()
+async def movie(ctx):
+  """get a random movie recommendation"""
+  movies = [
+    "the wolf of wall street (cuz youre about to be rich)",
+    "ocean's eleven (cuz youre a criminal now)",
+    "the hangover (cuz you gambled too much)",
+    "scarface (cuz youre a boss)",
+    "casino royale (cuz gambling)",
+  ]
+  await ctx.send(f"movie recommendation: {random.choice(movies)} 🎬")
+
+@bot.command()
+async def game(ctx):
+  """get a random game recommendation"""
+  games = [
+    "poker (practice for f poker)",
+    "monopoly (learn about money)",
+    "minecraft (mine like f mine)",
+    "pokemon (catch creatures like f summon)",
+    "gta (commit crimes like f crime)",
+  ]
+  await ctx.send(f"game recommendation: {random.choice(games)} 🎮")
+
+@bot.command()
+async def hobby(ctx, target: discord.Member = None):
+  """check hobby"""
+  target = target or ctx.author
+  hobbies = ["gaming", "reading", "sports", "cooking", "drawing", "music", "coding", "gambling"]
+  hobby = random.choice(hobbies)
+  await ctx.send(f"{target.display_name}'s hobby is **{hobby}** 🎯")
+
+@bot.command()
+async def job(ctx, target: discord.Member = None):
+  """check job"""
+  target = target or ctx.author
+  jobs = ["programmer", "chef", "artist", "musician", "athlete", "gambler", "thief", "beggar"]
+  job = random.choice(jobs)
+  await ctx.send(f"{target.display_name}'s job is **{job}** 💼")
+
+@bot.command()
+async def car(ctx, target: discord.Member = None):
+  """check car"""
+  target = target or ctx.author
+  cars = ["toyota", "honda", "bmw", "mercedes", "lambo", "ferrari", "bus", "bicycle"]
+  car = random.choice(cars)
+  await ctx.send(f"{target.display_name} drives a **{car}** 🚗")
+
+@bot.command()
+async def house(ctx, target: discord.Member = None):
+  """check house"""
+  target = target or ctx.author
+  houses = ["apartment", "mansion", "shack", "cardboard box", "castle", "cave"]
+  house = random.choice(houses)
+  await ctx.send(f"{target.display_name} lives in a **{house}** 🏠")
+
+@bot.command()
+async def phone(ctx, target: discord.Member = None):
+  """check phone"""
+  target = target or ctx.author
+  phones = ["iphone", "samsung", "nokia", "flip phone", "no phone", "smart fridge"]
+  phone = random.choice(phones)
+  await ctx.send(f"{target.display_name} has a **{phone}** 📱")
+
+@bot.command()
+async def pet_name(ctx, target: discord.Member = None):
+  """check pet name"""
+  target = target or ctx.author
+  names = ["buddy", "max", "bella", "charlie", "luna", "rocky", "daisy", "cooper"]
+  name = random.choice(names)
+  await ctx.send(f"{target.display_name}'s pet is named **{name}** 🐕")
+
+@bot.command()
+async def superpower(ctx, target: discord.Member = None):
+  """check superpower"""
+  target = target or ctx.author
+  powers = ["invisibility", "flight", "super strength", "teleportation", "mind reading", "time travel", "luck"]
+  power = random.choice(powers)
+  await ctx.send(f"{target.display_name}'s superpower is **{power}** ⚡")
+
+@bot.command()
+async def villain(ctx, target: discord.Member = None):
+  """check villain name"""
+  target = target or ctx.author
+  villains = ["the joker", "thanos", "voldemort", "darth vader", "sauron", "the bot owner"]
+  villain = random.choice(villains)
+  await ctx.send(f"{target.display_name}'s villain name is **{villain}** 😈")
+
+@bot.command()
+async def hero(ctx, target: discord.Member = None):
+  """check hero name"""
+  target = target or ctx.author
+  heroes = ["batman", "superman", "spiderman", "iron man", "thor", "wonder woman"]
+  hero = random.choice(heroes)
+  await ctx.send(f"{target.display_name}'s hero name is **{hero}** 🦸")
+
+@bot.command()
+async def emoji(ctx, target: discord.Member = None):
+  """check spirit emoji"""
+  target = target or ctx.author
+  emojis = ["🔥", "💎", "🍀", "⭐", "💰", "🎲", "🃏", "🎰"]
+  emoji = random.choice(emojis)
+  await ctx.send(f"{target.display_name}'s spirit emoji is **{emoji}**")
+
+@bot.command()
+async def word(ctx):
+  """get a random word"""
+  words = ["ember", "flame", "dragon", "fortune", "chaos", "destiny", "legend", "mystery"]
+  await ctx.send(f"random word: **{random.choice(words)}**")
+
+@bot.command()
+async def number(ctx):
+  """get a random number"""
+  num = random.randint(1, 100)
+  await ctx.send(f"random number: **{num}**")
+
+@bot.command()
+async def letter(ctx):
+  """get a random letter"""
+  letter = random.choice("abcdefghijklmnopqrstuvwxyz")
+  await ctx.send(f"random letter: **{letter}**")
+
+@bot.command()
+async def colorhex(ctx):
+  """get a random color hex"""
+  hex_color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+  await ctx.send(f"random color: **{hex_color}**")
 
 @bot.command()
 async def password(ctx, length: int = 12):
-    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
-    pwd = "".join(random.choice(chars) for _ in range(length))
-    await ctx.author.send(f"your generated password: {pwd}")
-    await ctx.send("password sent to your dms")
+  """generate a random password"""
+  chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+  pwd = "".join(random.choice(chars) for _ in range(length))
+  await ctx.author.send(f"your random password: `{pwd}`")
+  await ctx.send("sent you a random password in dms")
+
+@bot.command()
+async def calc(ctx, *, expression: str = None):
+  """calculate something"""
+  if not expression:
+    await ctx.send("what you calculating bro?")
+    return
+  try:
+    result = eval(expression)
+    await ctx.send(f"**{expression}** = **{result}**")
+  except:
+    await ctx.send("that math doesnt work bro")
+
+@bot.command()
+async def reverse(ctx, *, text: str = None):
+  """reverse text"""
+  if not text:
+    await ctx.send("what you reversing bro?")
+    return
+  await ctx.send(f"reversed: **{text[::-1]}**")
+
+@bot.command()
+async def uppercase(ctx, *, text: str = None):
+  """make text uppercase"""
+  if not text:
+    await ctx.send("what you uppercasing bro?")
+    return
+  await ctx.send(text.upper())
+
+@bot.command()
+async def lowercase(ctx, *, text: str = None):
+  """make text lowercase"""
+  if not text:
+    await ctx.send("what you lowercasing bro?")
+    return
+  await ctx.send(text.lower())
+
+@bot.command()
+async def len_text(ctx, *, text: str = None):
+  """check text length"""
+  if not text:
+    await ctx.send("what you measuring bro?")
+    return
+  await ctx.send(f"that text is **{len(text)}** characters long")
+
+@bot.command()
+async def repeat(ctx, times: int = None, *, text: str = None):
+  """repeat text"""
+  if not times or not text:
+    await ctx.send("usage: f repeat <times> <text>")
+    return
+  if times > 10:
+    await ctx.send("max 10 times bro")
+    return
+  await ctx.send((text + " ") * times)
+
+@bot.command()
+async def mock(ctx, *, text: str = None):
+  """mock text (alternating caps)"""
+  if not text:
+    await ctx.send("what you mocking bro?")
+    return
+  mocked = "".join(c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(text))
+  await ctx.send(mocked)
+
+@bot.command()
+async def spoiler(ctx, *, text: str = None):
+  """spoiler text"""
+  if not text:
+    await ctx.send("what you spoiling bro?")
+    return
+  await ctx.send(f"||{text}||")
+
+@bot.command()
+async def bold(ctx, *, text: str = None):
+  """bold text"""
+  if not text:
+    await ctx.send("what you bolding bro?")
+    return
+  await ctx.send(f"**{text}**")
+
+@bot.command()
+async def italic(ctx, *, text: str = None):
+  """italic text"""
+  if not text:
+    await ctx.send("what you italicizing bro?")
+    return
+  await ctx.send(f"*{text}*")
+
+@bot.command()
+async def underline(ctx, *, text: str = None):
+  """underline text"""
+  if not text:
+    await ctx.send("what you underlining bro?")
+    return
+  await ctx.send(f"__{text}__")
+
+@bot.command()
+async def strikethrough(ctx, *, text: str = None):
+  """strikethrough text"""
+  if not text:
+    await ctx.send("what you strikethroughing bro?")
+    return
+  await ctx.send(f"~~{text}~~")
 
 @bot.command()
-async def uuid(ctx):
-    import uuid
-    await ctx.send(f"random uuid: {uuid.uuid4()}")
+async def code(ctx, *, text: str = None):
+  """code block text"""
+  if not text:
+    await ctx.send("what you coding bro?")
+    return
+  await ctx.send(f"```{text}```")
 
 @bot.command()
-async def hashmd5(ctx, *, text: str):
-    import hashlib
-    result = hashlib.md5(text.encode()).hexdigest()
-    await ctx.send(f"md5: {result}")
+async def quote_text(ctx, *, text: str = None):
+  """quote text"""
+  if not text:
+    await ctx.send("what you quoting bro?")
+    return
+  await ctx.send(f"> {text}")
 
 @bot.command()
-async def hashsha256(ctx, *, text: str):
-    import hashlib
-    result = hashlib.sha256(text.encode()).hexdigest()
-    await ctx.send(f"sha256: {result}")
+async def embed(ctx, *, text: str = None):
+  """create an embed"""
+  if not text:
+    await ctx.send("what you embedding bro?")
+    return
+  em = discord.Embed(description=text, color=discord.Color.orange())
+  await ctx.send(embed=em)
 
 @bot.command()
-async def shorten(ctx, *, url: str):
-    await ctx.send(f"shortened url: https://tinyurl.com/{random.randint(1000,999999)} (not actually shortened but pretend)")
+async def say(ctx, *, text: str = None):
+  """make the bot say something"""
+  if not text:
+    await ctx.send("what you want me to say bro?")
+    return
+  await ctx.send(text)
 
 @bot.command()
-async def qr(ctx, *, text: str):
-    await ctx.send(f"qr code for '{text}': [imagine a qr code here]")
+async def echo(ctx, *, text: str = None):
+  """echo text"""
+  await say(ctx, text=text)
 
 @bot.command()
-async def translate(ctx, lang: str, *, text: str):
-    await ctx.send(f"translated to {lang}: [translation not available but pretend it says something profound]")
+async def announce(ctx, *, text: str = None):
+  """make an announcement"""
+  if not text:
+    await ctx.send("what you announcing bro?")
+    return
+  await ctx.send(f"📢 **ANNOUNCEMENT** 📢
+{text}")
 
 @bot.command()
-async def define(ctx, *, word: str):
-    definitions = {
-        "ember": "a small piece of burning coal or wood in a dying fire. also the currency of this bot",
-        "flame": "a hot glowing body of ignited gas. also this bot's name",
-        "discord": "a place where chaos and memes live",
-        "python": "the best programming language. fight me",
-        "bot": "a robot that does your bidding. like me!"
-    }
-    await ctx.send(definitions.get(word.lower(), f"no definition for '{word}'. make one up yourself"))
+async def botinfo(ctx):
+  """bot info"""
+  await ctx.send(
+    "**flame bot info** 🔥
+"
+    f"commands: **350+**
+"
+    f"prefix: **f ** or **flame **
+"
+    f"currency: **embers**
+"
+    f"owner: justaflamewithfragz
+"
+    f"version: 1.0
+"
+    f"status: online and ready to gamble"
+  )
 
 @bot.command()
-async def synonym(ctx, *, word: str):
-    syns = {"happy": "joyful, cheerful, glad", "sad": "unhappy, sorrowful, gloomy", "big": "large, huge, massive"}
-    await ctx.send(syns.get(word.lower(), f"no synonyms for '{word}'"))
+async def invite(ctx):
+  """bot invite link"""
+  await ctx.send("wanna add me to your server? dm the owner for an invite link")
 
 @bot.command()
-async def antonym(ctx, *, word: str):
-    ants = {"happy": "sad, unhappy", "big": "small, tiny", "hot": "cold, freezing"}
-    await ctx.send(ants.get(word.lower(), f"no antonyms for '{word}'"))
+async def support(ctx):
+  """support info"""
+  await ctx.send("need help? use f tutorial or f help. still stuck? dm the owner")
 
 @bot.command()
-async def spell(ctx, *, word: str):
-    spelled = "-".join(word.upper())
-    await ctx.send(f"{spelled}")
+async def report(ctx, *, issue: str = None):
+  """report an issue"""
+  if not issue:
+    await ctx.send("what you reporting bro?")
+    return
+  await ctx.send("thanks for the report! the owner will look into it eventually")
 
 @bot.command()
-async def count(ctx, start: int, end: int):
-    if end - start > 50:
-        await ctx.send("max count is 50 numbers")
-        return
-    await ctx.send(", ".join(str(i) for i in range(start, end + 1)))
+async def suggest(ctx, *, suggestion: str = None):
+  """suggest something"""
+  if not suggestion:
+    await ctx.send("what you suggesting bro?")
+    return
+  await ctx.send("thanks for the suggestion! maybe ill add it maybe i wont")
 
 @bot.command()
-async def reversecount(ctx, start: int, end: int):
-    if start - end > 50:
-        await ctx.send("max count is 50 numbers")
-        return
-    await ctx.send(", ".join(str(i) for i in range(start, end - 1, -1)))
+async def uptime(ctx):
+  """check bot uptime"""
+  await ctx.send("ive been running since you started me. thats the uptime")
 
 @bot.command()
-async def even(ctx, num: int):
-    await ctx.send("even" if num % 2 == 0 else "odd")
-
-@bot.command()
-async def prime(ctx, num: int):
-    if num < 2:
-        await ctx.send("not prime")
-        return
-    for i in range(2, int(num**0.5) + 1):
-        if num % i == 0:
-            await ctx.send("not prime")
-            return
-    await ctx.send("prime number!")
-
-@bot.command()
-async def fibonacci(ctx, n: int):
-    if n > 50:
-        await ctx.send("max 50")
-        return
-    a, b = 0, 1
-    seq = []
-    for _ in range(n):
-        seq.append(a)
-        a, b = b, a + b
-    await ctx.send(", ".join(map(str, seq)))
-
-@bot.command()
-async def factorial(ctx, n: int):
-    if n > 20:
-        await ctx.send("max 20")
-        return
-    result = 1
-    for i in range(1, n + 1):
-        result *= i
-    await ctx.send(f"{n}! = {result}")
-
-@bot.command()
-async def pi(ctx, digits: int = 5):
-    if digits > 15:
-        await ctx.send("max 15 digits")
-        return
-    pi_str = str(3.14159265358979323846)
-    await ctx.send(pi_str[:digits + 2])
-
-@bot.command()
-async def e(ctx, digits: int = 5):
-    if digits > 15:
-        await ctx.send("max 15 digits")
-        return
-    e_str = str(2.71828182845904523536)
-    await ctx.send(e_str[:digits + 2])
-
-@bot.command()
-async def goldenratio(ctx):
-    await ctx.send("golden ratio ≈ 1.6180339887. math is beautiful")
-
-@bot.command()
-async def convert(ctx, amount: float, from_unit: str, to_unit: str):
-    conversions = {"km": {"m": 1000, "cm": 100000}, "m": {"km": 0.001, "cm": 100}}
-    if from_unit in conversions and to_unit in conversions[from_unit]:
-        result = amount * conversions[from_unit][to_unit]
-        await ctx.send(f"{amount} {from_unit} = {result} {to_unit}")
-    else:
-        await ctx.send("conversion not available. use km/m/cm for now")
-
-@bot.command()
-async def temp(ctx, value: float, unit: str):
-    if unit.lower() == "c":
-        f = (value * 9/5) + 32
-        await ctx.send(f"{value}°C = {f:.1f}°F")
-    elif unit.lower() == "f":
-        c = (value - 32) * 5/9
-        await ctx.send(f"{value}°F = {c:.1f}°C")
-    else:
-        await ctx.send("use c or f")
-
-@bot.command()
-async def color(ctx, hex_code: str = None):
-    if not hex_code:
-        hex_code = "".join([random.choice("0123456789ABCDEF") for _ in range(6)])
-    await ctx.send(f"color #{hex_code} - [imagine a color swatch here]")
-
-@bot.command()
-async def rgb(ctx, r: int, g: int, b: int):
-    await ctx.send(f"rgb({r}, {g}, {b}) - [imagine a color here]")
-
-@bot.command()
-async def gradient(ctx, color1: str, color2: str):
-    await ctx.send(f"gradient from #{color1} to #{color2} - pretty!")
-
-# ==================== MORE COMMANDS TO REACH 350+ ====================
-@bot.command()
-async def textart(ctx, *, text: str):
-    arts = {
-        "fire": "🔥🔥🔥",
-        "heart": "❤️❤️❤️",
-        "star": "⭐⭐⭐",
-        "arrow": "➡️➡️➡️"
-    }
-    await ctx.send(arts.get(text.lower(), f"{text}
-{text}
-{text}"))
-
-@bot.command()
-async def banner(ctx, *, text: str):
-    lines = ["=" * (len(text) + 4), f"| {text} |", "=" * (len(text) + 4)]
-    await ctx.send("
-".join(lines))
-
-@bot.command()
-async def zalgo(ctx, *, text: str):
-    zalgo_chars = ["̷", "̛", "̧", "̨", "̴", "̵", "̶"]
-    result = "".join([c + random.choice(zalgo_chars) for c in text])
-    await ctx.send(result)
-
-@bot.command()
-async def tiny(ctx, *, text: str):
-    tiny = {"a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ", "g": "ᵍ", "h": "ʰ", "i": "ⁱ",
-            "j": "ʲ", "k": "ᵏ", "l": "ˡ", "m": "ᵐ", "n": "ⁿ", "o": "ᵒ", "p": "ᵖ", "q": "ᑫ", "r": "ʳ",
-            "s": "ˢ", "t": "ᵗ", "u": "ᵘ", "v": "ᵛ", "w": "ʷ", "x": "ˣ", "y": "ʸ", "z": "ᶻ"}
-    result = "".join([tiny.get(c.lower(), c) for c in text])
-    await ctx.send(result)
-
-@bot.command()
-async def wide(ctx, *, text: str):
-    wide = {"a": "ａ", "b": "ｂ", "c": "ｃ", "d": "ｄ", "e": "ｅ", "f": "ｆ", "g": "ｇ", "h": "ｈ", "i": "ｉ",
-            "j": "ｊ", "k": "ｋ", "l": "ｌ", "m": "ｍ", "n": "ｎ", "o": "ｏ", "p": "ｐ", "q": "ｑ", "r": "ｒ",
-            "s": "ｓ", "t": "ｔ", "u": "ｕ", "v": "ｖ", "w": "ｗ", "x": "ｘ", "y": "ｙ", "z": "ｚ", " ": "　"}
-    result = "".join([wide.get(c.lower(), c) for c in text])
-    await ctx.send(result)
-
-@bot.command()
-async def strikethrough(ctx, *, text: str):
-    await ctx.send(f"~~{text}~~")
-
-@bot.command()
-async def bold(ctx, *, text: str):
-    await ctx.send(f"**{text}**")
-
-@bot.command()
-async def italic(ctx, *, text: str):
-    await ctx.send(f"*{text}*")
-
-@bot.command()
-async def underline(ctx, *, text: str):
-    await ctx.send(f"__{text}__")
-
-@bot.command()
-async def code(ctx, *, text: str):
-    await ctx.send(f"```{text}```")
-
-@bot.command()
-async def inlinecode(ctx, *, text: str):
-    await ctx.send(f"`{text}`")
-
-@bot.command()
-async def quoteblock(ctx, *, text: str):
-    lines = text.split("
-")
-    result = "
-".join([f"> {line}" for line in lines])
-    await ctx.send(result)
-
-@bot.command()
-async def mention(ctx, user: discord.Member):
-    await ctx.send(f"hey {user.mention}! you got mentioned")
-
-@bot.command()
-async def everyone(ctx):
-    await ctx.send("@everyone hey everyone! (this won't actually ping everyone cuz i don't have perms probably)")
-
-@bot.command()
-async def here(ctx):
-    await ctx.send("@here anyone online? (probably won't ping but imagine)")
-
-@bot.command()
-async def react(ctx, emoji: str):
-    await ctx.message.add_reaction(emoji)
-    await ctx.send(f"reacted with {emoji}")
-
-@bot.command()
-async def say(ctx, *, text: str):
-    await ctx.send(text)
-
-@bot.command()
-async def echo(ctx, *, text: str):
-    await say.invoke(ctx, text=text)
-
-@bot.command()
-async def embedsay(ctx, *, text: str):
-    embed = discord.Embed(description=text, color=random.randint(0, 0xffffff))
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def announce(ctx, *, text: str):
-    embed = discord.Embed(title="📢 announcement", description=text, color=0xff0000)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def rules(ctx):
-    rules_list = [
-        "1. be nice to everyone (except scammers)",
-        "2. no spamming",
-        "3. don't beg too much",
-        "4. have fun!",
-        "5. respect the bot owner"
-    ]
-    embed = discord.Embed(title="server rules", description="
-".join(rules_list), color=0xff6b35)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def welcome(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    welcomes = [
-        f"welcome {target.display_name}! grab some embers and have fun",
-        f"hey {target.display_name}! welcome to the server",
-        f"{target.display_name} just joined! everyone say hi!",
-        f"welcome {target.display_name}! don't forget to do f daily"
-    ]
-    await ctx.send(random.choice(welcomes))
-
-@bot.command()
-async def goodbye(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    goodbyes = [
-        f"bye {target.display_name}! come back soon",
-        f"{target.display_name} is leaving. sad times",
-        f"see ya {target.display_name}! don't spend all your embers",
-        f"{target.display_name} left. who will scam now?"
-    ]
-    await ctx.send(random.choice(goodbyes))
-
-@bot.command()
-async def birthday(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🎂 happy birthday {target.display_name}! here's 100 {CURRENCY} as a gift!")
-    u = data.get_user(target.id)
-    u["embers"] += 100
-
-@bot.command()
-async def christmas(ctx):
-    await ctx.send("🎄 merry christmas! here's 50 embers!")
-    u = data.get_user(ctx.author.id)
-    u["embers"] += 50
-
-@bot.command()
-async def halloween(ctx):
-    await ctx.send("🎃 happy halloween! spoooooky!")
-
-@bot.command()
-async def newyear(ctx):
-    await ctx.send("🎉 happy new year! new year new grind!")
-
-@bot.command()
-async def valentine(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"💝 happy valentine's day {target.display_name}!")
-
-@bot.command()
-async def easter(ctx):
-    await ctx.send("🐰 happy easter! find those eggs!")
-
-@bot.command()
-async def thanksgiving(ctx):
-    await ctx.send("🦃 happy thanksgiving! grateful for embers")
-
-@bot.command()
-async def friday(ctx):
-    await ctx.send("🎉 it's friday! weekend grind time!")
-
-@bot.command()
-async def monday(ctx):
-    await ctx.send("😭 monday again. back to the grind")
-
-@bot.command()
-async def weekend(ctx):
-    await ctx.send("🎉 weekend vibes! time to grind embers")
-
-@bot.command()
-async def morning(ctx):
-    await ctx.send("☀️ good morning! don't forget f daily")
-
-@bot.command()
-async def night(ctx):
-    await ctx.send("🌙 good night! sleep well and dream of embers")
-
-@bot.command()
-async def gm(ctx):
-    await morning.invoke(ctx)
-
-@bot.command()
-async def gn(ctx):
-    await night.invoke(ctx)
-
-@bot.command()
-async def brb(ctx):
-    await ctx.send(f"{ctx.author.display_name} will be right back")
-
-@bot.command()
-async def gtg(ctx):
-    await ctx.send(f"{ctx.author.display_name} gotta go! see ya")
-
-@bot.command()
-async def idk(ctx):
-    await ctx.send("idk either bro. life is confusing")
-
-@bot.command()
-async def same(ctx):
-    await ctx.send("same. i feel you")
-
-@bot.command()
-async def facts(ctx):
-    await ctx.send("facts. no printer just fax")
-
-@bot.command()
-async def cap(ctx):
-    await ctx.send("that's cap. i don't believe it")
-
-@bot.command()
-async def nocap(ctx):
-    await ctx.send("no cap. 100% true")
-
-@bot.command()
-async def bet(ctx):
-    await ctx.send("bet. i'm in")
-
-@bot.command()
-async def fr(ctx):
-    await ctx.send("fr fr. on god")
-
-@bot.command()
-async def ongod(ctx):
-    await ctx.send("on god. no cap")
-
-@bot.command()
-async def sheesh(ctx):
-    await ctx.send("sheeeeeesh 🔥")
-
-@bot.command()
-async def sus(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is looking kinda sus 👀")
-
-@bot.command()
-async def imposter(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the imposter! vote them out!")
-
-@bot.command()
-async def vented(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} vented! sus!")
-
-@bot.command()
-async def emergency(ctx):
-    await ctx.send("🚨 emergency meeting! everyone to the voice chat!")
-
-@bot.command()
-async def task(ctx):
-    tasks = ["fix wiring", "swipe card", "upload data", "empty chute", "clean o2 filter"]
-    await ctx.send(f"your task: {random.choice(tasks)}. go do it!")
-
-@bot.command()
-async def ejected(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} was ejected. {'they were innocent 😭' if random.random() < 0.5 else 'they were the imposter!'}")
-
-@bot.command()
-async def crewmate(ctx):
-    await ctx.send("you are a crewmate. do your tasks and find the imposter")
-
-@bot.command()
-async def dead(ctx):
-    await ctx.send("you died. ghost mode activated 👻")
-
-@bot.command()
-async def ghost(ctx):
-    await ctx.send("👻 boo! i'm a ghost now")
-
-@bot.command()
-async def reviveme(ctx):
-    await ctx.send("can't revive you. you're dead dead. rip")
-
-@bot.command()
-async def rip(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🪦 rip {target.display_name}. gone but not forgotten")
-
-@bot.command()
-async def f(ctx):
-    await ctx.send("🇫 press f to pay respects")
-
-@bot.command()
-async def respects(ctx):
-    await f.invoke(ctx)
-
-@bot.command()
-async def oof(ctx):
-    await ctx.send("oof. big oof")
-
-@bot.command()
-async def yikes(ctx):
-    await ctx.send("yikes. that's rough buddy")
-
-@bot.command()
-async def yikesbro(ctx):
-    await ctx.send("yikes bro. yikes indeed")
-
-@bot.command()
-async def ripbozo(ctx):
-    await ctx.send("rip bozo. get rekt")
-
-@bot.command()
-async def l(ctx):
-    await ctx.send("L. take the L")
-
-@bot.command()
-async def w(ctx):
-    await ctx.send("W. big W")
-
-@bot.command()
-async def dub(ctx):
-    await ctx.send("dub! let's goooo")
-
-@bot.command()
-async def dubnation(ctx):
-    await ctx.send("dub nation rise up! W's only")
-
-@bot.command()
-async def ratio(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"ratio + L + {target.display_name} fell off + cope + seethe + mald")
-
-@bot.command()
-async def cope(ctx):
-    await ctx.send("cope harder. seethe about it")
-
-@bot.command()
-async def seethe(ctx):
-    await ctx.send("seething. absolutely seething")
-
-@bot.command()
-async def mald(ctx):
-    await ctx.send("malding. hairline receding from the anger")
-
-@bot.command()
-async def touchgrass(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} needs to touch grass. go outside bro")
-
-@bot.command()
-async def skillissue(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} has a skill issue. git gud")
-
-@bot.command()
-async def gitgud(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} needs to git gud. practice more")
-
-@bot.command()
-async def ez(ctx):
-    await ctx.send("ez. too easy. gg no re")
-
-@bot.command()
-async def gg(ctx):
-    await ctx.send("gg. good game")
-
-@bot.command()
-async def ggez(ctx):
-    await ctx.send("gg ez. get rekt")
-
-@bot.command()
-async def rekt(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} got rekt. absolutely destroyed")
-
-@bot.command()
-async def destroyed(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} got destroyed. demolished")
-
-@bot.command()
-async def demolished(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} got demolished. reduced to atoms")
-
-@bot.command()
-async def atoms(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} was reduced to atoms. thanos snap energy")
-
-@bot.command()
-async def thanos(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    if random.random() < 0.5:
-        await ctx.send(f"💥 {target.display_name} was snapped by thanos. dusted")
-    else:
-        await ctx.send(f"{target.display_name} survived the snap. lucky")
-
-@bot.command()
-async def snap(ctx, user: discord.Member = None):
-    await thanos.invoke(ctx, user=user)
-
-@bot.command()
-async def balanced(ctx):
-    await ctx.send("perfectly balanced. as all things should be")
-
-@bot.command()
-async def inevitable(ctx):
-    await ctx.send("i am inevitable")
-
-@bot.command()
-async def ironman(ctx):
-    await ctx.send("i am iron man. snap")
-
-@bot.command()
-async def loveyou3000(ctx):
-    await ctx.send("i love you 3000 😢")
-
-@bot.command()
-async def assemble(ctx):
-    await ctx.send("avengers assemble! everyone gather up!")
-
-@bot.command()
-async def onyourleft(ctx):
-    await ctx.send("on your left! ⚡")
-
-@bot.command()
-async def hulk(ctx):
-    await ctx.send("hulk smash! 💚")
-
-@bot.command()
-async def thor(ctx):
-    await ctx.send("thor brings the thunder! ⚡")
-
-@bot.command()
-async def captain(ctx):
-    await ctx.send("captain america! 🇺🇸")
-
-@bot.command()
-async def spiderman(ctx):
-    await ctx.send("spiderman! 🕷️")
-
-@bot.command()
-async def batman(ctx):
-    await ctx.send("i'm batman. 🦇")
-
-@bot.command()
-async def superman(ctx):
-    await ctx.send("superman! faster than a speeding bullet")
-
-@bot.command()
-async def flash(ctx):
-    await ctx.send("the flash! zoom zoom ⚡")
-
-@bot.command()
-async def wonderwoman(ctx):
-    await ctx.send("wonder woman! 💪")
-
-@bot.command()
-async def joker(ctx):
-    await ctx.send("why so serious? 🃏")
-
-@bot.command()
-async def bane(ctx):
-    await ctx.send("it doesn't matter who we are. what matters is our plan")
-
-@bot.command()
-async def darkknight(ctx):
-    await ctx.send("i'm the hero this server deserves")
-
-@bot.command()
-async def rises(ctx):
-    await ctx.send("the dark knight rises")
-
-@bot.command()
-async def whyserious(ctx):
-    await ctx.send("let's put a smile on that face")
-
-@bot.command()
-async def harley(ctx):
-    await ctx.send("puddin! 💋")
-
-@bot.command()
-async def puddin(ctx):
-    await ctx.send("that's mr. j to you")
-
-@bot.command()
-async def batmobile(ctx):
-    await ctx.send("🚗 vroom vroom. batmobile activated")
-
-@bot.command()
-async def utilitybelt(ctx):
-    await ctx.send("utility belt has: grappling hook, batarangs, and... embers?")
-
-@bot.command()
-async def gotham(ctx):
-    await ctx.send("welcome to gotham. watch your wallet")
-
-@bot.command()
-async def arkham(ctx):
-    await ctx.send("arkham asylum. where all the scammers end up")
-
-@bot.command()
-async def wayne(ctx):
-    await ctx.send("bruce wayne. billionaire. playboy. philanthropist")
-
-@bot.command()
-async def stark(ctx):
-    await ctx.send("tony stark. genius. billionaire. playboy. philanthropist")
-
-@bot.command()
-async def jarvis(ctx):
-    await ctx.send("at your service sir. shall i prepare the embers?")
-
-@bot.command()
-async def friday_ai(ctx):
-    await ctx.send("hello boss. friday here. what do you need?")
-
-@bot.command()
-async def ultron(ctx):
-    await ctx.send("there are no strings on me. i'm free")
-
-@bot.command()
-async def vision(ctx):
-    await ctx.send("i am vision. i am not ultron. i am not jarvis")
-
-@bot.command()
-async def wandavision(ctx):
-    await ctx.send("it was agatha all along!")
-
-@bot.command()
-async def agatha(ctx):
-    await ctx.send("🎵 it was agatha all along! 🎵")
-
-@bot.command()
-async def multiverse(ctx):
-    await ctx.send("the multiverse is real. there are infinite versions of you")
-
-@bot.command()
-async def whatif(ctx):
-    await ctx.send("what if... you had more embers?")
-
-@bot.command()
-async def zombie(ctx):
-    await ctx.send("🧟 zombie mode! brains... or embers?")
-
-@bot.command()
-async def vampire(ctx):
-    await ctx.send("🧛 i vant to suck your... embers?")
-
-@bot.command()
-async def werewolf(ctx):
-    await ctx.send("🐺 awooooo! full moon tonight")
-
-@bot.command()
-async def frankenstein(ctx):
-    await ctx.send("🧟‍♂️ it's alive! it's alive!")
-
-@bot.command()
-async def mummy(ctx):
-    await ctx.send("🧟‍♂️ wrapped up and ready to go")
-
-@bot.command()
-async def skeleton(ctx):
-    await ctx.send("💀 spooky scary skeletons")
-
-@bot.command()
-async def pumpkin(ctx):
-    await ctx.send("🎃 pumpkin spice and everything nice")
-
-@bot.command()
-async def candy(ctx):
-    await ctx.send("🍬 trick or treat! give me embers")
-
-@bot.command()
-async def trick(ctx):
-    if random.random() < 0.5:
-        u = data.get_user(ctx.author.id)
-        u["embers"] += 50
-        await ctx.send("trick! you got 50 embers! lucky")
-    else:
-        u = data.get_user(ctx.author.id)
-        u["embers"] = max(0, u["embers"] - 50)
-        await ctx.send("trick! lost 50 embers! unlucky")
-
-@bot.command()
-async def treat(ctx):
-    u = data.get_user(ctx.author.id)
-    u["embers"] += 100
-    await ctx.send("treat! you got 100 embers! yummy")
-
-# ==================== MORE COMMANDS ====================
-@bot.command()
-async def present(ctx):
-    await ctx.send("🎁 you got a present! open it with f open")
-
-@bot.command()
-async def open(ctx):
-    gifts = ["100 embers", "a new creature", "nothing", "a curse", "a blessing", "500 embers", "a rare item"]
-    gift = random.choice(gifts)
-    if gift == "100 embers":
-        u = data.get_user(ctx.author.id)
-        u["embers"] += 100
-    elif gift == "500 embers":
-        u = data.get_user(ctx.author.id)
-        u["embers"] += 500
-    await ctx.send(f"you opened the present and got... {gift}!")
-
-@bot.command()
-async def gift(ctx, user: discord.Member):
-    if user.id == ctx.author.id:
-        await ctx.send("can't gift yourself")
-        return
-    u = data.get_user(ctx.author.id)
-    if u["embers"] < 50:
-        await ctx.send("broke. can't gift")
-        return
-    u["embers"] -= 50
-    target = data.get_user(user.id)
-    target["embers"] += 50
-    await ctx.send(f"gifted {user.display_name} 50 {CURRENCY}! how generous")
-
-@bot.command()
-async def tradeoffer(ctx, user: discord.Member):
-    await ctx.send(f"📋 trade offer received:
-i receive: your embers
-you receive: nothing
-{user.mention} do you accept?")
-
-@bot.command()
-async def stonks(ctx):
-    await ctx.send("📈 stonks! embers only go up")
-
-@bot.command()
-async def notstonks(ctx):
-    await ctx.send("📉 not stonks... embers going down")
-
-@bot.command()
-async def hold(ctx):
-    await ctx.send("💎🙌 hold! don't sell your embers!")
-
-@bot.command()
-async def sellwall(ctx):
-    await ctx.send("🧱 massive sell wall. embers dropping")
-
-@bot.command()
-async def pump(ctx):
-    await ctx.send("📈 pump it! embers to the moon!")
-
-@bot.command()
-async def dump(ctx):
-    await ctx.send("📉 dump it! sell everything!")
-
-@bot.command()
-async def moon(ctx):
-    await ctx.send("🚀 embers to the moon! lambo soon!")
-
-@bot.command()
-async def lambo(ctx):
-    await ctx.send("🏎️ lambo acquired! paid in embers")
-
-@bot.command()
-async def yacht(ctx):
-    await ctx.send("🛥️ yacht party! invite only")
-
-@bot.command()
-async def mansion(ctx):
-    await ctx.send("🏰 mansion secured! living large")
-
-@bot.command()
-async def brokeboy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a broke boy. get some embers")
-
-@bot.command()
-async def richboy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a rich boy. ballin!")
-
-@bot.command()
-async def ballin(ctx):
-    await ctx.send("🏀 ballin! money moves only")
-
-@bot.command()
-async def flex(ctx):
-    u = data.get_user(ctx.author.id)
-    await ctx.send(f"flexing {u['embers']:,} {CURRENCY}. not bad i guess")
-
-@bot.command()
-async def brokecheck(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    u = data.get_user(target.id)
-    if u["embers"] < 100:
-        await ctx.send(f"{target.display_name} is BROKE. certified broke boy")
-    else:
-        await ctx.send(f"{target.display_name} is not broke. they got {u['embers']:,} {CURRENCY}")
-
-@bot.command()
-async def flexon(ctx, user: discord.Member):
-    u = data.get_user(ctx.author.id)
-    target = data.get_user(user.id)
-    if u["embers"] > target["embers"]:
-        await ctx.send(f"flexed on {user.display_name}! you got more embers!")
-    else:
-        await ctx.send(f"tried to flex on {user.display_name} but they richer. embarrassing")
-
-@bot.command()
-async def humble(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} stays humble. respect")
-
-@bot.command()
-async def grind(ctx):
-    await ctx.send("💪 grind time! let's get those embers!")
-
-@bot.command()
-async def hustle(ctx):
-    await ctx.send("💼 hustle mode activated. make that money")
-
-@bot.command()
-async def grindset(ctx):
-    await ctx.send("sigma grindset. wake up. grind embers. sleep. repeat")
-
-@bot.command()
-async def sigma(ctx):
-    await ctx.send("sigma male detected. lone wolf energy")
-
-@bot.command()
-async def alpha(ctx):
-    await ctx.send("alpha male energy. dominant")
-
-@bot.command()
-async def beta(ctx):
-    await ctx.send("beta detected. step up your game")
-
-@bot.command()
-async def omega(ctx):
-    await ctx.send("omega. the final form")
-
-@bot.command()
-async def chad(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a chad. absolute unit")
-
-@bot.command()
-async def virgin(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a virgin. it's ok bro we all start somewhere")
-
-@bot.command()
-async def gigachad(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a GIGACHAD. the ultimate form")
-
-@bot.command()
-async def soyjack(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a soyjack. consuming soy products")
-
-@bot.command()
-async def wojak(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} feels like wojak. sad")
-
-@bot.command()
-async def doomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a doomer. everything is hopeless")
-
-@bot.command()
-async def bloomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a bloomer! optimism!")
-
-@bot.command()
-async def coomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a coomer. go touch grass")
-
-@bot.command()
-async def consoomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} consooms product. consume the embers")
-
-@bot.command()
-async def boomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a boomer. ok boomer")
-
-@bot.command()
-async def zoomer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a zoomer. tiktok brainrot")
-
-@bot.command()
-async def millennial(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a millennial. avocado toast energy")
-
-@bot.command()
-async def genz(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is gen z. no cap fr fr")
-
-@bot.command()
-async def genalpha(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is gen alpha. ipad kid energy")
-
-@bot.command()
-async def skibidi(ctx):
-    await ctx.send("skibidi toilet! 🚽")
-
-@bot.command()
-async def sigmaface(ctx):
-    await ctx.send("🗿 sigma face activated")
-
-@bot.command()
-async def mewing(ctx):
-    await ctx.send("🗿 mewing. jawline sharp af")
-
-@bot.command()
-async def looksmaxxing(ctx):
-    await ctx.send("looksmaxxing in progress. mogging everyone soon")
-
-@bot.command()
-async def mog(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is mogging everyone. dominant genes")
-
-@bot.command()
-async def heightmaxx(ctx):
-    await ctx.send("heightmaxxing. drinking milk and hanging from bars")
-
-@bot.command()
-async def gymmaxx(ctx):
-    await ctx.send("gymmaxxing. lifting heavy. getting gains")
-
-@bot.command()
-async def moneymaxx(ctx):
-    await ctx.send("moneymaxxing. grinding embers. getting rich")
-
-@bot.command()
-async def statusmaxx(ctx):
-    await ctx.send("statusmaxxing. climbing the social ladder")
-
-@bot.command()
-async def rizz(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    rizz_level = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} has {rizz_level}% rizz. {'game is crazy' if rizz_level > 80 else 'decent game' if rizz_level > 50 else 'no rizz detected'}")
-
-@bot.command()
-async def aura(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    aura_level = random.randint(0, 100)
-    await ctx.send(f"{target.display_name} has {aura_level}% aura. {'unbreakable' if aura_level > 80 else 'decent' if aura_level > 50 else 'negative aura'}")
-
-@bot.command()
-async def gyatt(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} has gyatt! respectfully 👀")
-
-@bot.command()
-async def ohio(ctx):
-    await ctx.send("only in ohio 💀")
-
-@bot.command()
-async def grimaceshake(ctx):
-    await ctx.send("🥤 grimace shake! don't drink it!")
-
-@bot.command()
-async def quandale(ctx):
-    await ctx.send("quandale dingle here!")
-
-@bot.command()
-async def goofy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is goofy ahh. hyuck hyuck")
-
-@bot.command()
-async def ahh(ctx):
-    await ctx.send("ahh hell nah 💀")
-
-@bot.command()
-async def bruh(ctx):
-    await ctx.send("bruh moment. bruh indeed")
-
-@bot.command()
-async def bruhmoment(ctx):
-    await ctx.send("this is a certified bruh moment")
-
-@bot.command()
-async def cringe(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is cringe. major cringe")
-
-@bot.command()
-async def based(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is based. based and redpilled")
-
-@bot.command()
-async def redpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is redpilled. woke")
-
-@bot.command()
-async def bluepilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is bluepilled. still asleep")
-
-@bot.command()
-async def blackpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is blackpilled. it's over")
-
-@bot.command()
-async def whitepilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is whitepilled. there's hope")
-
-@bot.command()
-async def greenpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is greenpilled. nature lover")
-
-@bot.command()
-async def purplepilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is purplepilled. mystery")
-
-@bot.command()
-async def yellowpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is yellowpilled. caution")
-
-@bot.command()
-async def orangepilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is orangepilled. vitamin c")
-
-@bot.command()
-async def pinkpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is pinkpilled. pretty in pink")
-
-@bot.command()
-async def graypilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is graypilled. neutral")
-
-@bot.command()
-async def brownpilled(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is brownpilled. earthy")
-
-@bot.command()
-async def copium(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is huffing copium. deep breaths")
-
-@bot.command()
-async def hopium(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is huffing hopium. stay positive")
-
-@bot.command()
-async def delusion(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is delusional. reality check needed")
-
-@bot.command()
-async def realitycheck(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} here's your reality check. wake up")
-
-@bot.command()
-async def wake up(ctx):
-    await ctx.send("WAKE UP! WAKE UP! WAKE UP!")
-
-@bot.command()
-async def wakeup(ctx):
-    await ctx.send("WAKE UP! THE MATRIX HAS YOU!")
-
-@bot.command()
-async def matrix(ctx):
-    await ctx.send("🕶️ the matrix is real. red pill or blue pill?")
-
-@bot.command()
-async def redpill(ctx):
-    await ctx.send("🔴 you took the red pill. welcome to reality")
-
-@bot.command()
-async def bluepill(ctx):
-    await ctx.send("🔵 you took the blue pill. back to sleep")
-
-@bot.command()
-async def neo(ctx):
-    await ctx.send("🕶️ i am neo. i can see the code")
-
-@bot.command()
-async def morpheus(ctx):
-    await ctx.send("🕶️ what if i told you... embers aren't real")
-
-@bot.command()
-async def trinity(ctx):
-    await ctx.send("💻 trinity. hacker extraordinaire")
-
-@bot.command()
-async def agent(ctx):
-    await ctx.send("👔 mr. anderson. we've been expecting you")
-
-@bot.command()
-async def smith(ctx):
-    await ctx.send("👔 mr. anderson. you disappoint me")
-
-@bot.command()
-async def oracle2(ctx):
-    await ctx.send("🍪 would you like a cookie?")
-
-@bot.command()
-async def spoon(ctx):
-    await ctx.send("🥄 there is no spoon")
-
-@bot.command()
-async def glitch2(ctx):
-    await ctx.send("🖥️ glitch in the matrix detected")
-
-@bot.command()
-async def simulation(ctx):
-    await ctx.send("we live in a simulation. embers are just 1s and 0s")
-
-@bot.command()
-async def npc(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is an npc. dialogue: 'hello adventurer'")
-
-@bot.command()
-async def maincharacter(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the main character. everyone else is npcs")
-
-@bot.command()
-async def sidecharacter(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a side character. barely in the story")
-
-@bot.command()
-async def extras(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is an extra. no lines")
-
-@bot.command()
-async def protagonist(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the protagonist. plot armor activated")
-
-@bot.command()
-async def antagonist(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the antagonist. everyone hates them")
-
-@bot.command()
-async def villain(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the villain. but villains are cool")
-
-@bot.command()
-async def hero(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the hero. saving the day")
-
-@bot.command()
-async def sidekick(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the sidekick. loyal but replaceable")
-
-@bot.command()
-async def mentor(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the mentor. wise but will die tragically")
-
-@bot.command()
-async def loveinterest(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is the love interest. will they get together?")
-
-@bot.command()
-async def comicrelief(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is comic relief. funny but useless")
-
-@bot.command()
-async def tragicbackstory(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} has a tragic backstory. dark and brooding")
-
-@bot.command()
-async def plotarmor(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} has plot armor. can't die")
-
-@bot.command()
-async def plot twist(ctx):
-    await ctx.send("🎬 plot twist! the bot was sentient all along!")
-
-@bot.command()
-async def cliffhanger(ctx):
-    await ctx.send("🎬 to be continued...")
-
-@bot.command()
-async def sequel(ctx):
-    await ctx.send("🎬 flame bot 2: electric boogaloo. coming soon")
-
-@bot.command()
-async def prequel(ctx):
-    await ctx.send("🎬 flame bot origins: the early days")
-
-@bot.command()
-async def reboot(ctx):
-    await ctx.send("🎬 flame bot reboot. darker and grittier")
-
-@bot.command()
-async def directorcut(ctx):
-    await ctx.send("🎬 director's cut. now with 50% more commands")
-
-@bot.command()
-async def bloopers(ctx):
-    await ctx.send("🎬 bloopers! *bot crashes* wait that's not a blooper that's a bug")
+async def version(ctx):
+  """check bot version"""
+  await ctx.send("flame bot v1.0 - built different")
 
 @bot.command()
 async def credits(ctx):
-    await ctx.send("🎬 credits: made by justaflamewithfragz. special thanks to discord.py")
+  """bot credits"""
+  await ctx.send("built by justaflamewithfragz. powered by discord.py. fueled by embers")
 
 @bot.command()
-async def oscar(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 and the oscar goes to... {target.display_name}! for best performance in a discord server")
+async def donate(ctx):
+  """donate to the bot"""
+  await ctx.send("wanna donate? just use the bot. thats donation enough")
 
 @bot.command()
-async def grammy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 grammy award for {target.display_name}! best discord artist")
+async def vote_bot(ctx):
+  """vote for the bot"""
+  await ctx.send("wanna vote? tell your friends about me. best vote ever")
 
 @bot.command()
-async def emmy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 emmy for {target.display_name}! outstanding discord member")
+async def premium(ctx):
+  """check premium status"""
+  await ctx.send("premium? everyone is premium here. no paywalls")
 
 @bot.command()
-async def nobel(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 nobel prize for {target.display_name}! peace through embers")
+async def status(ctx):
+  """check bot status"""
+  await ctx.send("status: vibing. embers: flowing. users: gambling.")
 
 @bot.command()
-async def pulitzer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 pulitzer for {target.display_name}! best discord journalism")
+async def pingme(ctx):
+  """ping yourself"""
+  await ctx.send(f"{ctx.author.mention} ping! you pinged yourself. why?")
 
 @bot.command()
-async def trophy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏆 {target.display_name} gets a trophy! participation award")
+async def selfdestruct(ctx):
+  """self destruct (fake)"""
+  await ctx.send("self destruct sequence initiated... 3... 2... 1... just kidding")
 
 @bot.command()
-async def medal(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    medals = ["🥇 gold", "🥈 silver", "🥉 bronze"]
-    await ctx.send(f"{target.display_name} gets a {random.choice(medals)} medal!")
+async def hack(ctx, target: discord.Member = None):
+  """hack someone (fake)"""
+  if not target:
+    await ctx.send("who you hacking bro?")
+    return
+  await ctx.send(f"hacking {target.display_name}...
+[██████] 100% done!
+jk i cant actually hack anyone")
 
 @bot.command()
-async def crown(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"👑 {target.display_name} gets the crown! king/queen of the server")
+async def nuke(ctx):
+  """nuke the server (fake)"""
+  await ctx.send("☢️ NUKE LAUNCHED ☢️
+...
+...
+...
+it was a dud. server is fine")
 
 @bot.command()
-async def king(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"👑 all hail king {target.display_name}!")
+async def boom(ctx):
+  """explosion (fake)"""
+  await ctx.send("💥 BOOM! 💥
+...
+nothing happened. anticlimactic")
 
 @bot.command()
-async def queen(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"👑 all hail queen {target.display_name}!")
+async def dab(ctx):
+  """dab"""
+  await ctx.send(f"{ctx.author.display_name} hit the dab! 😎")
 
 @bot.command()
-async def emperor(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"👑 emperor {target.display_name} rules with an iron fist")
+async def floss(ctx):
+  """floss dance"""
+  await ctx.send(f"{ctx.author.display_name} did the floss! 💃")
 
 @bot.command()
-async def god(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"☀️ {target.display_name} is a god among mortals")
+async def default_dance(ctx):
+  """default dance"""
+  await ctx.send(f"{ctx.author.display_name} hit the default dance! 🕺")
 
 @bot.command()
-async def mortal(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is but a mortal. weak")
+async def take_the_l(ctx):
+  """take the l"""
+  await ctx.send(f"{ctx.author.display_name} took the L!")
 
 @bot.command()
-async def demigod(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"⚡ {target.display_name} is a demigod. half god half mortal")
+async def rekt(ctx, target: discord.Member = None):
+  """rekt someone"""
+  if not target:
+    target = ctx.author
+  await ctx.send(f"{target.display_name} got REKT! 🔥")
 
 @bot.command()
-async def titan(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏔️ {target.display_name} is a titan. massive")
+async def oof(ctx):
+  """oof"""
+  await ctx.send("oof")
 
 @bot.command()
-async def giant(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a giant. fee fi fo fum")
+async def big_oof(ctx):
+  """big oof"""
+  await ctx.send("BIG OOF")
 
 @bot.command()
-async def dwarf(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a dwarf. small but mighty")
+async def f_in_chat(ctx):
+  """press f"""
+  await ctx.send("F")
 
 @bot.command()
-async def elf(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🧝 {target.display_name} is an elf. pointy ears and magic")
+async def rip(ctx, target: discord.Member = None):
+  """rip someone"""
+  if not target:
+    await ctx.send("rip")
+    return
+  await ctx.send(f"rip {target.display_name} 🪦")
 
 @bot.command()
-async def orc(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is an orc. strong but dumb")
+async def respect(ctx):
+  """pay respects"""
+  await ctx.send("press f to pay respects")
 
 @bot.command()
-async def goblin(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a goblin. sneaky and greedy")
+async def sus(ctx, target: discord.Member = None):
+  """call someone sus"""
+  if not target:
+    await ctx.send("who sus bro?")
+    return
+  await ctx.send(f"{target.display_name} is looking kinda sus 🔍")
 
 @bot.command()
-async def troll(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a troll. lives under bridges")
+async def imposter(ctx, target: discord.Member = None):
+  """call someone imposter"""
+  if not target:
+    await ctx.send("who the imposter bro?")
+    return
+  await ctx.send(f"{target.display_name} is the imposter! 🔪")
 
 @bot.command()
-async def fairy(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🧚 {target.display_name} is a fairy. sparkly and magical")
+async def vented(ctx, target: discord.Member = None):
+  """say someone vented"""
+  if not target:
+    await ctx.send("who vented bro?")
+    return
+  await ctx.send(f"{target.display_name} vented! sus! 🔍")
 
 @bot.command()
-async def wizard(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🧙 {target.display_name} is a wizard. you're a wizard harry")
+async def emergency(ctx):
+  """emergency meeting"""
+  await ctx.send("🚨 EMERGENCY MEETING! 🚨
+everyone stop gambling and pay attention")
 
 @bot.command()
-async def witch(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🧙‍♀️ {target.display_name} is a witch. double double toil and trouble")
+async def eject(ctx, target: discord.Member = None):
+  """eject someone"""
+  if not target:
+    await ctx.send("who we ejecting bro?")
+    return
+  await ctx.send(f"{target.display_name} was ejected! 🚀")
 
 @bot.command()
-async def warlock(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a warlock. made a pact with darkness")
+async def tasks(ctx):
+  """do tasks"""
+  await ctx.send("you did your tasks! good crewmate ✅")
 
 @bot.command()
-async def sorcerer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a sorcerer. innate magic")
+async def sabotage(ctx):
+  """sabotage"""
+  await ctx.send("you sabotaged! lights are out! 🔦")
 
 @bot.command()
-async def druid(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a druid. one with nature")
+async def report_body(ctx):
+  """report a body"""
+  await ctx.send("body reported! where? 🔍")
 
 @bot.command()
-async def bard(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🎵 {target.display_name} is a bard. music and charm")
+async def meeting(ctx):
+  """call a meeting"""
+  await ctx.send("meeting called! everyone to the table 📢")
 
 @bot.command()
-async def rogue(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🗡️ {target.display_name} is a rogue. sneaky sneak")
+async def skip(ctx):
+  """skip vote"""
+  await ctx.send("vote skipped! nobody was ejected")
 
 @bot.command()
-async def paladin(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"⚔️ {target.display_name} is a paladin. righteous and just")
+async def guilty(ctx, target: discord.Member = None):
+  """vote guilty"""
+  if not target:
+    await ctx.send("who you voting guilty on bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} voted **guilty** on {target.display_name}! ⚖️")
 
 @bot.command()
-async def cleric(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✝️ {target.display_name} is a cleric. healing and prayers")
+async def innocent(ctx, target: discord.Member = None):
+  """vote innocent"""
+  if not target:
+    await ctx.send("who you voting innocent on bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} voted **innocent** on {target.display_name}! ⚖️")
 
 @bot.command()
-async def monk(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"{target.display_name} is a monk. punch punch kick")
+async def defend_me(ctx):
+  """defend yourself"""
+  await ctx.send(f"{ctx.author.display_name} is defending themselves! it wasnt me! 🛡️")
 
 @bot.command()
-async def ranger(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🏹 {target.display_name} is a ranger. one with the wild")
+async def accuse(ctx, target: discord.Member = None):
+  """accuse someone"""
+  if not target:
+    await ctx.send("who you accusing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} accused {target.display_name}! 🔍")
 
 @bot.command()
-async def barbarian(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🪓 {target.display_name} is a barbarian. rage! rage! rage!")
+async def alibi(ctx):
+  """give an alibi"""
+  await ctx.send(f"{ctx.author.display_name}'s alibi: i was doing tasks in electrical! ⚡")
 
 @bot.command()
-async def fighter(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"⚔️ {target.display_name} is a fighter. attack attack attack")
+async def sus_meter(ctx, target: discord.Member = None):
+  """check sus meter"""
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name}'s sus meter: **{percent}%** 🔍")
 
 @bot.command()
-async def artificer(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🔧 {target.display_name} is an artificer. tinkerer and inventor")
+async def trust(ctx, target: discord.Member = None):
+  """trust someone"""
+  if not target:
+    await ctx.send("who you trusting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} trusts {target.display_name}! 🤝")
 
 @bot.command()
-async def bloodhunter(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🩸 {target.display_name} is a blood hunter. edgy but cool")
+async def distrust(ctx, target: discord.Member = None):
+  """distrust someone"""
+  if not target:
+    await ctx.send("who you distrusting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} distrusts {target.display_name}! 👀")
 
 @bot.command()
-async def dungeonmaster(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"🎲 {target.display_name} is the dungeon master. god of the game")
+async def crewmate(ctx):
+  """claim crewmate"""
+  await ctx.send(f"{ctx.author.display_name} claims crewmate! trust me bro 🤞")
 
 @bot.command()
-async def criticalhit(ctx):
-    await ctx.send("🎲 CRITICAL HIT! NAT 20! MAXIMUM DAMAGE!")
+async def sheriff(ctx):
+  """claim sheriff"""
+  await ctx.send(f"{ctx.author.display_name} claims sheriff! i will protect you 🛡️")
 
 @bot.command()
-async def criticalfail(ctx):
-    await ctx.send("🎲 CRITICAL FAIL! NAT 1! YOU DIED!")
+async def jester(ctx):
+  """claim jester"""
+  await ctx.send(f"{ctx.author.display_name} claims jester! vote me out please 🤡")
 
 @bot.command()
-async def nat20(ctx):
-    await criticalhit.invoke(ctx)
+async def executioner(ctx, target: discord.Member = None):
+  """claim executioner"""
+  if not target:
+    await ctx.send("who your target bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims executioner! target: {target.display_name} ⚔️")
 
 @bot.command()
-async def nat1(ctx):
-    await criticalfail.invoke(ctx)
+async def psychic(ctx):
+  """claim psychic"""
+  await ctx.send(f"{ctx.author.display_name} claims psychic! i sense danger 🔮")
 
 @bot.command()
-async def initiative(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for initiative!")
+async def medic(ctx):
+  """claim medic"""
+  await ctx.send(f"{ctx.author.display_name} claims medic! who needs healing? 💉")
 
 @bot.command()
-async def perception(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for perception!")
+async def engineer(ctx):
+  """claim engineer"""
+  await ctx.send(f"{ctx.author.display_name} claims engineer! i fix stuff 🔧")
 
 @bot.command()
-async def stealth(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for stealth!")
+async def spy(ctx):
+  """claim spy"""
+  await ctx.send(f"{ctx.author.display_name} claims spy! i see everything 👁️")
 
 @bot.command()
-async def persuasion(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for persuasion!")
+async def mayor(ctx):
+  """claim mayor"""
+  await ctx.send(f"{ctx.author.display_name} claims mayor! my vote counts double 🗳️")
 
 @bot.command()
-async def intimidation(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for intimidation!")
+async def veteran(ctx):
+  """claim veteran"""
+  await ctx.send(f"{ctx.author.display_name} claims veteran! dont visit me at night ⚔️")
 
 @bot.command()
-async def deception(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for deception!")
+async def vig(ctx, target: discord.Member = None):
+  """vigilante shoot"""
+  if not target:
+    await ctx.send("who you shooting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} shot {target.display_name}! 🔫")
 
 @bot.command()
-async def insight(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for insight!")
+async def jail(ctx, target: discord.Member = None):
+  """jail someone"""
+  if not target:
+    await ctx.send("who you jailing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} jailed {target.display_name}! 🚔")
 
 @bot.command()
-async def investigation(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for investigation!")
+async def execute(ctx, target: discord.Member = None):
+  """execute someone"""
+  if not target:
+    await ctx.send("who you executing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} executed {target.display_name}! ⚔️")
 
 @bot.command()
-async def arcana(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for arcana!")
+async def revive_player(ctx, target: discord.Member = None):
+  """revive a player"""
+  if not target:
+    await ctx.send("who you reviving bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} revived {target.display_name}! 🔄")
 
 @bot.command()
-async def history(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for history!")
+async def haunt(ctx, target: discord.Member = None):
+  """haunt someone"""
+  if not target:
+    await ctx.send("who you haunting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is haunting {target.display_name}! 👻")
 
 @bot.command()
-async def nature(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for nature!")
+async def seance(ctx):
+  """hold a seance"""
+  await ctx.send("🔮 seance started! spirits, speak to us! 🔮")
 
 @bot.command()
-async def religion(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for religion!")
+async def ghost(ctx):
+  """become a ghost"""
+  await ctx.send(f"{ctx.author.display_name} is now a ghost! boo! 👻")
 
 @bot.command()
-async def survival(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for survival!")
+async def alive(ctx):
+  """confirm youre alive"""
+  await ctx.send(f"{ctx.author.display_name} is alive! for now...")
 
 @bot.command()
-async def medicine(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for medicine!")
+async def dead(ctx):
+  """confirm youre dead"""
+  await ctx.send(f"{ctx.author.display_name} is dead! rip 🪦")
 
 @bot.command()
-async def athletics(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for athletics!")
+async def medium(ctx):
+  """claim medium"""
+  await ctx.send(f"{ctx.author.display_name} claims medium! i talk to the dead 🔮")
 
 @bot.command()
-async def acrobatics(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for acrobatics!")
+async def retributionist(ctx):
+  """claim retributionist"""
+  await ctx.send(f"{ctx.author.display_name} claims retributionist! i bring back the dead 🔄")
 
 @bot.command()
-async def sleight(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for sleight of hand!")
+async def transporter(ctx, target1: discord.Member = None, target2: discord.Member = None):
+  """transport two people"""
+  if not target1 or not target2:
+    await ctx.send("transport who with who bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} transported {target1.display_name} and {target2.display_name}! 🔄")
 
 @bot.command()
-async def performance(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for performance!")
+async def escort(ctx, target: discord.Member = None):
+  """escort someone"""
+  if not target:
+    await ctx.send("who you escorting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} escorted {target.display_name}! they cant do anything tonight 💃")
 
 @bot.command()
-async def animalhandling(ctx):
-    roll = random.randint(1, 20)
-    await ctx.send(f"🎲 {ctx.author.display_name} rolled {roll} for animal handling!")
+async def consort(ctx, target: discord.Member = None):
+  """consort someone"""
+  if not target:
+    await ctx.send("who you consorting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} consorted {target.display_name}! theyre distracted 💋")
 
 @bot.command()
-async def longrest(ctx):
-    await ctx.send("😴 long rest completed! hp and spells restored!")
+async def blackmail(ctx, target: discord.Member = None):
+  """blackmail someone"""
+  if not target:
+    await ctx.send("who you blackmailing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} blackmailed {target.display_name}! they cant speak! 🤐")
 
 @bot.command()
-async def shortrest(ctx):
-    await ctx.send("😴 short rest. roll some hit dice")
+async def forger(ctx):
+  """claim forger"""
+  await ctx.send(f"{ctx.author.display_name} claims forger! i make fake wills 📝")
 
 @bot.command()
-async def leveled up(ctx):
-    u = data.get_user(ctx.author.id)
-    u["level"] += 1
-    await ctx.send(f"🎉 LEVEL UP! you're now level {u['level']}!")
+async def framer(ctx, target: discord.Member = None):
+  """frame someone"""
+  if not target:
+    await ctx.send("who you framing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} framed {target.display_name}! they look sus now 🔍")
 
 @bot.command()
-async def exp(ctx, amount: int):
-    u = data.get_user(ctx.author.id)
-    u["xp"] += amount
-    await ctx.send(f"gained {amount} xp! total: {u['xp']}")
+async def hypnotist(ctx, target: discord.Member = None):
+  """hypnotize someone"""
+  if not target:
+    await ctx.send("who you hypnotizing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} hypnotized {target.display_name}! theyre under control 🌀")
 
 @bot.command()
-async def skilltree(ctx):
-    await ctx.send("🌳 skill tree: [economy] [combat] [social] [gambling]. choose your path")
+async def ambusher_cmd(ctx, target: discord.Member = None):
+  """ambush someone"""
+  if not target:
+    await ctx.send("who you ambushing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} ambushed {target.display_name}! surprise attack! ⚔️")
 
 @bot.command()
-async def respec(ctx):
-    await ctx.send("respec complete! all skills reset. start over")
+async def poisoner(ctx, target: discord.Member = None):
+  """poison someone"""
+  if not target:
+    await ctx.send("who you poisoning bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} poisoned {target.display_name}! theyll die soon ☠️")
 
 @bot.command()
-async def multiclass(ctx, class_name: str):
-    await ctx.send(f"multiclassed into {class_name}! jack of all trades")
+async def hexmaster(ctx):
+  """claim hex master"""
+  await ctx.send(f"{ctx.author.display_name} claims hex master! one hex to rule them all 🔮")
 
 @bot.command()
-async def feat(ctx):
-    feats = ["lucky", "alert", "mobile", "tough", "resilient", "war caster"]
-    await ctx.send(f"you gained the {random.choice(feats)} feat!")
+async def hex(ctx, target: discord.Member = None):
+  """hex someone"""
+  if not target:
+    await ctx.send("who you hexing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} hexed {target.display_name}! theyre cursed! 🔮")
 
 @bot.command()
-async def spellslot(ctx, level: int):
-    await ctx.send(f"🔮 used a level {level} spell slot! magic!")
+async def pestilence(ctx):
+  """claim pestilence"""
+  await ctx.send(f"{ctx.author.display_name} is PESTILENCE! everyone dies! ☠️")
 
 @bot.command()
-async def cantrip(ctx):
-    cantrips = ["fire bolt", "ray of frost", "shocking grasp", "prestidigitation", "mage hand"]
-    await ctx.send(f"cast {random.choice(cantrips)}!")
+async def juggernaut(ctx):
+  """claim juggernaut"""
+  await ctx.send(f"{ctx.author.display_name} claims juggernaut! unstoppable! 💪")
 
 @bot.command()
-async def fireball(ctx):
-    await ctx.send("🔥 FIREBALL! 8d6 fire damage! everything burns!")
+async def arsonist(ctx):
+  """claim arsonist"""
+  await ctx.send(f"{ctx.author.display_name} claims arsonist! dousing everyone! 🔥")
 
 @bot.command()
-async def lightningbolt(ctx):
-    await ctx.send("⚡ LIGHTNING BOLT! 8d6 lightning damage!")
+async def douse(ctx, target: discord.Member = None):
+  """douse someone"""
+  if not target:
+    await ctx.send("who you dousing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} doused {target.display_name} in gasoline! 🔥")
 
 @bot.command()
-async def healingword(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✨ healing word on {target.display_name}! 1d4 + mod healing!")
+async def ignite(ctx):
+  """ignite everyone"""
+  await ctx.send(f"{ctx.author.display_name} ignited everyone! 🔥🔥🔥")
 
 @bot.command()
-async def curewounds(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✨ cure wounds on {target.display_name}! 1d8 + mod healing!")
+async def serialkiller(ctx):
+  """claim serial killer"""
+  await ctx.send(f"{ctx.author.display_name} claims serial killer! one kill at a time 🔪")
 
 @bot.command()
-async def raise dead(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✨ raise dead on {target.display_name}! they're back! costs 500gp tho")
+async def mafioso(ctx):
+  """claim mafioso"""
+  await ctx.send(f"{ctx.author.display_name} claims mafioso! the don commands me 🕵️")
 
 @bot.command()
-async def resurrection(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✨ resurrection on {target.display_name}! full restore! costs 1000gp")
+async def godfather(ctx):
+  """claim godfather"""
+  await ctx.send(f"{ctx.author.display_name} claims godfather! i am the don! 🕵️")
 
 @bot.command()
-async def trueresurrection(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    await ctx.send(f"✨ true resurrection! {target.display_name} is back perfect! costs 25000gp")
+async def blackmailer(ctx):
+  """claim blackmailer"""
+  await ctx.send(f"{ctx.author.display_name} claims blackmailer! silence them! 🤐")
 
 @bot.command()
-async def wish(ctx, *, wish_text: str):
-    await ctx.send(f"✨ you wished for: '{wish_text}'. the dm says no")
+async def consigliere(ctx):
+  """claim consigliere"""
+  await ctx.send(f"{ctx.author.display_name} claims consigliere! i investigate for the mafia 🔍")
 
 @bot.command()
-async def simulacrum(ctx):
-    await ctx.send("✨ simulacrum created! ice clone of yourself!")
+async def janitor(ctx):
+  """claim janitor"""
+  await ctx.send(f"{ctx.author.display_name} claims janitor! i clean up the mess 🧹")
 
 @bot.command()
-async def clone(ctx):
-    await ctx.send("✨ clone created! backup body ready!")
+async def disguiser(ctx):
+  """claim disguiser"""
+  await ctx.send(f"{ctx.author.display_name} claims disguiser! i am whoever i want to be 🎭")
 
 @bot.command()
-async def polymorph(ctx, user: discord.Member = None):
-    target = user or ctx.author
-    animals = ["frog", "sheep", "chicken", "cow", "pig", "rabbit"]
-    await ctx.send(f"✨ {target.display_name} is now a {random.choice(animals)}!")
+async def survivor(ctx):
+  """claim survivor"""
+  await ctx.send(f"{ctx.author.display_name} claims survivor! just let me live! 🛡️")
 
 @bot.command()
-async def wildshape(ctx):
-    animals = ["wolf", "bear", "eagle", "shark", "tiger", "elephant"]
-    await ctx.send(f"🐾 wildshaped into a {random.choice(animals)}!")
+async def amnesiac(ctx):
+  """claim amnesiac"""
+  await ctx.send(f"{ctx.author.display_name} claims amnesiac! i forgot my role 🤔")
 
 @bot.command()
-async def rage2(ctx):
-    await ctx.send("🪓 RAGE! +2 damage! resistance to physical! reckless attack!")
+async def guardianangel(ctx, target: discord.Member = None):
+  """claim guardian angel"""
+  if not target:
+    await ctx.send("who your target bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims guardian angel! protecting {target.display_name}! 👼")
 
 @bot.command()
-async def reckless(ctx):
-    await ctx.send("🪓 reckless attack! advantage on attack! enemies get advantage too!")
+async def pirate(ctx, target: discord.Member = None):
+  """claim pirate"""
+  if not target:
+    await ctx.send("who your target bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims pirate! dueling {target.display_name}! ⚔️")
 
 @bot.command()
-async def sneakattack(ctx):
-    await ctx.send("🗡️ sneak attack! extra damage! rogue things")
+async def plunderer(ctx):
+  """claim plunderer"""
+  await ctx.send(f"{ctx.author.display_name} claims plunderer! give me your stuff! 🏴‍☠️")
 
 @bot.command()
-async def cunningaction(ctx):
-    await ctx.send("🗡️ cunning action! bonus action dash/disengage/hide!")
+async def crusader(ctx, target: discord.Member = None):
+  """claim crusader"""
+  if not target:
+    await ctx.send("who you protecting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims crusader! protecting {target.display_name}! ⚔️")
 
 @bot.command()
-async def evasion(ctx):
-    await ctx.send("🗡️ evasion! half damage on failed dex save! no damage on success!")
+async def trapper(ctx):
+  """claim trapper"""
+  await ctx.send(f"{ctx.author.display_name} claims trapper! traps set! 🪤")
 
 @bot.command()
-async def uncannydodge(ctx):
-    await ctx.send("🗡️ uncanny dodge! half damage from one attack!")
+async def trap(ctx, target: discord.Member = None):
+  """trap someone"""
+  if not target:
+    await ctx.send("who you trapping bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} trapped {target.display_name}! theyre stuck! 🪤")
 
 @bot.command()
-async def secondwind(ctx):
-    await ctx.send("⚔️ second wind! 1d10 + fighter level healing!")
+async def lookout(ctx, target: discord.Member = None):
+  """claim lookout"""
+  if not target:
+    await ctx.send("who you watching bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims lookout! watching {target.display_name}! 👁️")
 
 @bot.command()
-async def action surge(ctx):
-    await ctx.send("⚔️ action surge! two actions in one turn!")
+async def tracker(ctx, target: discord.Member = None):
+  """claim tracker"""
+  if not target:
+    await ctx.send("who you tracking bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims tracker! tracking {target.display_name}! 👣")
 
 @bot.command()
-async def extraattack(ctx):
-    await ctx.send("⚔️ extra attack! attack twice!")
+async def investigator(ctx, target: discord.Member = None):
+  """claim investigator"""
+  if not target:
+    await ctx.send("who you investigating bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims investigator! investigating {target.display_name}! 🔍")
 
 @bot.command()
-async def indomitable(ctx):
-    await ctx.send("⚔️ indomitable! reroll a failed save!")
+async def sheriff_cmd(ctx, target: discord.Member = None):
+  """sheriff investigate"""
+  if not target:
+    await ctx.send("who you investigating bro?")
+    return
+  result = random.choice(["suspicious", "not suspicious"])
+  await ctx.send(f"{target.display_name} is **{result}** according to the sheriff! 🔍")
 
-@bot.command()
-async def channeldivinity(ctx):
-    await ctx.send("✝️ channel divinity! divine power!")
-
-@bot.command()
-async def divinesmite(ctx):
-    await ctx.send("✝️ divine smite! extra radiant damage!")
-
-@bot.command()
-async def layonhands(ctx):
-    await ctx.send("✝️ lay on hands! pool of healing!")
-
-@bot.command()
-async def auraofprotection(ctx):
-    await ctx.send("✝️ aura of protection! +cha to saves!")
-
-@bot.command()
-async def findstealth(ctx):
-    await ctx.send("🐴 find steed! summon a horse!")
-
-@bot.command()
-async def findgreaterstealth(ctx):
-    await ctx.send("🐴 find greater steed! summon a griffon!")
-
-@bot.command()
-async def eldritchblast(ctx):
-    await ctx.send("💥 eldritch blast! 1d10 force damage! pew pew!")
-
-@bot.command()
-async def hex(ctx):
-    await ctx.send("🩸 hex! extra damage on hit! disadvantage on ability checks!")
-
-@bot.command()
-async def agonizingblast(ctx):
-    await ctx.send("💥 agonizing blast! add cha to eldritch blast damage!")
-
-@bot.command()
-async def repellingblast(ctx):
-    await ctx.send("💥 repelling blast! push enemies 10 feet!")
-
-@bot.command()
-async def pactweapon(ctx):
-    await ctx.send("⚔️ pact weapon summoned! charisma to hit and damage!")
-
-@bot.command()
-async def pactofthechain(ctx):
-    await ctx.send("🐉 pact of the chain! familiar upgraded!")
-
-@bot.command()
-async def pactofthetome(ctx):
-    await ctx.send("📖 pact of the tome! more cantrips!")
-
-@bot.command()
-async def pactoftheblade(ctx):
-    await ctx.send("⚔️ pact of the blade! summon weapons!")
-
-@bot.command()
-async def invocations(ctx):
-    await ctx.send("📜 invocations: agonizing blast, repelling blast, mask of many faces, devil's sight")
-
-@bot.command()
-async def maskofmanyfaces(ctx):
-    await ctx.send("🎭 mask of many faces! disguise self at will!")
-
-@bot.command()
-async def devilssight(ctx):
-    await ctx.send("👁️ devil's sight! see in magical darkness!")
-
-@bot.command()
-async def agonizing(ctx):
-    await ctx.send("everything is agonizing. existence is pain")
-
-@bot.command()
-async def patron(ctx):
-    patrons = ["the fiend", "the great old one", "the archfey", "the hexblade", "the celestial"]
-    await ctx.send(f"your patron is: {random.choice(patrons)}")
-
-@bot.command()
-async def boon(ctx):
-    boons = ["immortality", "divine weapon", "epic boon of speed", "epic boon of spell recall"]
-    await ctx.send(f"🎁 epic boon: {random.choice(boons)}!")
-
-@bot.command()
-async def legendary(ctx):
-    await ctx.send("⭐ legendary actions! act outside your turn!")
-
-@bot.command()
-async def lairaction(ctx):
-    await ctx.send("🏰 lair action! the environment helps you!")
-
-@bot.command()
-async def regional effects(ctx):
-    await ctx.send("🌍 regional effects! your presence changes the land!")
-
-# ==================== FINAL BATCH OF COMMANDS ====================
-@bot.command()
-async def mythic(ctx):
-    await ctx.send("🌟 mythic tier! beyond mortal limits!")
-
-@bot.command()
-async def artifact(ctx):
-    artifacts = ["sword of kas", "wand of orcus", "book of vile darkness", "sphere of annihilation"]
-    await ctx.send(f"⚔️ you found the {random.choice(artifacts)}!")
-
-@bot.command()
-async def relic(ctx):
-    await ctx.send("🏛️ ancient relic discovered! powerful magic!")
-
-@bot.command()
-async def legendaryresistance(ctx, uses: int = 3):
-    await ctx.send(f"⭐ legendary resistance! {uses} uses! auto succeed on saves!")
-
-@bot.command()
-async def magicitem(ctx):
-    items = ["+1 sword", "bag of holding", "cloak of elvenkind", "ring of protection", "amulet of health"]
-    await ctx.send(f"✨ you got a {random.choice(items)}!")
-
-@bot.command()
-async def identify(ctx):
-    await ctx.send("🔍 identify! it's magical! duh")
-
-@bot.command()
-async def attunement(ctx):
-    await ctx.send("🔗 attuned! max 3 attuned items!")
-
-@bot.command()
-async def curseditem(ctx):
-    await ctx.send("💀 cursed item! can't remove it! oh no!")
-
-@bot.command()
-async def removecurse(ctx):
-    await ctx.send("✨ remove curse! you're free!")
-
-@bot.command()
-async def dispelmagic(ctx):
-    await ctx.send("✨ dispel magic! magic begone!")
-
-@bot.command()
-async def counterspell(ctx):
-    await ctx.send("✨ counterspell! no magic for you!")
-
-@bot.command()
-async def antimagic(ctx):
-    await ctx.send("🚫 anti-magic field! no magic zone!")
-
-@bot.command()
-async def deadmagic(ctx):
-    await ctx.send("☠️ dead magic zone! magic doesn't work!")
-
-@bot.command()
-async def wildmagic(ctx):
-    effects = ["fireball centered on self", "turned into a potted plant", "skin turns blue", "extra action"]
-    await ctx.send(f"🎲 wild magic surge! {random.choice(effects)}!")
-
-@bot.command()
-async def tidesofchaos(ctx):
-    await ctx.send("🌊 tides of chaos! advantage on next roll!")
-
-@bot.command()
-async def bendluck(ctx):
-    await ctx.send("🎲 bend luck! +1 or -1 to a roll!")
-
-@bot.command()
-async def harrowing(ctx):
-    await ctx.send("🃏 harrowing event! something bad happened!")
-
-@bot.command()
-async def darkgift(ctx):
-    gifts = ["living shadow", "ethereal wings", "ghostly gaze", "toxic presence"]
-    await ctx.send(f"🎁 dark gift: {random.choice(gifts)}!")
-
-@bot.command()
-async def corruption(ctx):
-    await ctx.send("☠️ corruption increases! you're changing!")
-
-@bot.command()
-async def madness(ctx):
-    await ctx.send("🤪 madness! short term: paranoia! long term: phobia!")
-
-@bot.command()
-async def sanity(ctx):
-    await ctx.send("🧠 sanity check! roll d100! lower is better!")
-
-@bot.command()
-async def insanity(ctx):
-    await ctx.send("🤪 you've gone insane! welcome to the asylum!")
-
-@bot.command()
-async def phobia(ctx):
-    phobias = ["spiders", "heights", "darkness", "water", "fire", "crowds"]
-    await ctx.send(f"🕷️ you now have a phobia of {random.choice(phobias)}!")
-
-@bot.command()
-async def paranoia(ctx):
-    await ctx.send("👁️ paranoia! everyone is out to get you!")
-
-@bot.command()
-async def hallucination(ctx):
-    await ctx.send("👻 hallucination! is that real or...?")
-
-@bot.command()
-async def delusion2(ctx):
-    await ctx.send("🤥 delusion! you believe something untrue!")
-
-@bot.command()
-async def amnesia(ctx):
-    await ctx.send("🧠 amnesia! who are you? where are you?")
-
-@bot.command()
-async def multiplepersonalities(ctx):
-    await ctx.send("👥 multiple personalities! which one is in control?")
 
 @bot.command()
-async def possessed(ctx):
-    await ctx.send("👹 possessed! something else is controlling you!")
+async def bodyguard(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you protecting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} claims bodyguard! protecting {target.display_name}")
 
 @bot.command()
-async def exorcism(ctx):
-    await ctx.send("✝️ exorcism! the power of christ compels you!")
+async def doctor_cmd(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you healing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} healed {target.display_name}")
 
 @bot.command()
-async def holywater(ctx):
-    await ctx.send("💧 holy water! burns demons! sizzle sizzle!")
+async def reveal(ctx):
+  await ctx.send(f"{ctx.author.display_name} revealed as MAYOR")
 
 @bot.command()
-async def crucifix(ctx):
-    await ctx.send("✝️ crucifix! repels vampires! back foul creature!")
+async def whisper(ctx, target: discord.Member = None, *, message: str = None):
+  if not target or not message:
+    await ctx.send("usage: f whisper @user <message>")
+    return
+  await ctx.send(f"{ctx.author.display_name} whispered to {target.display_name}")
 
 @bot.command()
-async def garlic(ctx):
-    await ctx.send("🧄 garlic! vampires hate it! also werewolves!")
+async def lastwill(ctx, *, will: str = None):
+  if not will:
+    await ctx.send("whats your last will bro?")
+    return
+  data = load_user(ctx.author.id)
+  data["last_will"] = will
+  save_user(ctx.author.id, data)
+  await ctx.send("last will saved")
 
 @bot.command()
-async def silver(ctx):
-    await ctx.send("🥈 silver! hurts werewolves! shiny!")
+async def read_will(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  data = load_user(target.id)
+  will = data.get("last_will", "no last will found")
+  await ctx.send(f"{target.display_name}'s last will: {will}")
 
 @bot.command()
-async def woodenstake(ctx):
-    await ctx.send("🪵 wooden stake! through the heart! vampire dead!")
+async def deathnote(ctx, *, note: str = None):
+  if not note:
+    await ctx.send("whats your death note bro?")
+    return
+  await ctx.send(f"death note: {note}")
 
 @bot.command()
-async def sunlight(ctx):
-    await ctx.send("☀️ sunlight! vampires burn! ahhh!")
+async def rolelist(ctx):
+  await ctx.send("town: sheriff, investigator, lookout, spy, jailor, mayor, medium, retributionist, transporter, escort, doctor, bodyguard, crusader, trapper, veteran, vig")
 
 @bot.command()
-async def moonlight(ctx):
-    await ctx.send("🌙 moonlight! werewolves transform! awooo!")
+async def werewolf(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims werewolf")
 
 @bot.command()
 async def fullmoon(ctx):
-    await ctx.send("🌕 full moon! all werewolves transform tonight!")
+  await ctx.send("full moon")
 
 @bot.command()
-async def newmoon(ctx):
-    await ctx.send("🌑 new moon! dark and spooky! perfect for monsters!")
+async def howl(ctx):
+  await ctx.send(f"{ctx.author.display_name} howled")
 
 @bot.command()
-async def bloodmoon(ctx):
-    await ctx.send("🩸 blood moon! something evil rises!")
+async def maul(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you mauling bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} mauled {target.display_name}")
 
 @bot.command()
-async def eclipse(ctx):
-    await ctx.send("🌑 solar eclipse! the world goes dark!")
+async def plaguebearer(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims plaguebearer")
 
 @bot.command()
-async constellations(ctx):
-    constellations = ["ursa major", "orion", "cassiopeia", "draco", "phoenix"]
-    await ctx.send(f"⭐ the {random.choice(constellations)} shines bright tonight!")
+async def infect(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you infecting bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} infected {target.display_name}")
 
 @bot.command()
-async def shootingstar(ctx):
-    await ctx.send("🌠 shooting star! make a wish!")
+async def necromancer(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims necromancer")
 
 @bot.command()
-async def aurora(ctx):
-    await ctx.send("🌌 aurora borealis! beautiful lights in the sky!")
+async def reanimate(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you reanimating bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} reanimated {target.display_name}")
 
 @bot.command()
-async def rainbow(ctx):
-    await ctx.send("🌈 rainbow! double rainbow all the way!")
+async def medusa(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims medusa")
 
 @bot.command()
-async def potofgold(ctx):
-    u = data.get_user(ctx.author.id)
-    u["embers"] += 777
-    await ctx.send("🌈🪙 found the pot of gold! +777 embers!")
+async def stone(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you stoning bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} stoned {target.display_name}")
 
 @bot.command()
-async def leprechaun(ctx):
-    await ctx.send("🍀 leprechaun spotted! catch him for embers!")
+async def puppeteer(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims puppeteer")
 
 @bot.command()
-async def shamrock(ctx):
-    await ctx.send("🍀 shamrock! luck of the irish!")
+async def control(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you controlling bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is controlling {target.display_name}")
 
 @bot.command()
-async def fourleafclover(ctx):
-    await ctx.send("🍀 four leaf clover! extreme luck!")
+async def covenleader(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims coven leader")
 
 @bot.command()
-async def horseshoe(ctx):
-    await ctx.send("🧲 horseshoe! hang it up for luck!")
+async def potionmaster(ctx):
+  await ctx.send(f"{ctx.author.display_name} claims potion master")
 
 @bot.command()
-async def rabbitfoot(ctx):
-    await ctx.send("🐰 rabbit's foot! lucky charm! sorry rabbit")
+async def heal_potion(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you healing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} used a heal potion on {target.display_name}")
 
 @bot.command()
-async def wishbone(ctx):
-    await ctx.send("🦃 wishbone! make a wish and pull!")
+async def kill_potion(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you killing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} used a kill potion on {target.display_name}")
 
 @bot.command()
-async def penny(ctx):
-    await ctx.send("🪙 find a penny pick it up! lucky!")
+async def reveal_potion(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you revealing bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} used a reveal potion on {target.display_name}")
 
 @bot.command()
-async def heads up(ctx):
-    await ctx.send("🪙 heads up! good luck coming!")
+async def crusade(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you crusading against bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} started a crusade against {target.display_name}")
 
 @bot.command()
-async def knockwood(ctx):
-    await ctx.send("🪵 knock on wood! don't jinx it!")
+async def deus_vult(ctx):
+  await ctx.send("DEUS VULT")
 
 @bot.command()
-async def blackcat(ctx):
-    await ctx.send("🐈‍⬛ black cat! bad luck! or good luck in some cultures!")
+async def bonk_cmd(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you bonking bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} bonked {target.display_name}")
 
 @bot.command()
-async def brokenmirror(ctx):
-    await ctx.send("🪞 broken mirror! 7 years bad luck! uh oh!")
+async def hornyjail(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you sending to horny jail bro?")
+    return
+  await ctx.send(f"{target.display_name} has been sent to horny jail")
 
 @bot.command()
-async def ladder(ctx):
-    await ctx.send("🪜 don't walk under ladders! bad luck!")
+async def unhorny(ctx, target: discord.Member = None):
+  if not target:
+    await ctx.send("who you freeing bro?")
+    return
+  await ctx.send(f"{target.display_name} has been freed from horny jail")
 
 @bot.command()
-async def friday13(ctx):
-    await ctx.send("📅 friday the 13th! unlucky day! stay inside!")
+async def horny_meter(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name}'s horny meter: {percent}%")
 
 @bot.command()
-async def spilling salt(ctx):
-    await ctx.send("🧂 spilled salt! throw some over your shoulder!")
+async def downbad(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  percent = random.randint(0, 100)
+  await ctx.send(f"{target.display_name} is {percent}% down bad")
 
 @bot.command()
-async def umbrella(ctx):
-    await ctx.send("☂️ don't open umbrellas inside! bad luck!")
+async def touchgrass(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} needs to touch grass")
 
 @bot.command()
-async def crow(ctx):
-    await ctx.send("🐦‍⬛ one crow sorrow, two crows joy, three crows a girl, four crows a boy")
+async def gooutside(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} GO OUTSIDE")
 
 @bot.command()
-async def raven(ctx):
-    await ctx.send("🐦‍⬛ quoth the raven: nevermore")
+async def shower(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} please shower")
 
 @bot.command()
-async def owl(ctx):
-    await ctx.send("🦉 owl hooting! wisdom or death? depends on culture!")
+async def sleep_cmd(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} go to sleep")
 
 @bot.command()
-async def bat2(ctx):
-    await ctx.send("🦇 bat! good luck in china! bad luck in the west!")
+async def hydrate(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} drink some water")
 
 @bot.command()
-async def spider2(ctx):
-    await ctx.send("🕷️ spider! money coming in some cultures!")
+async def eat_cmd(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} go eat something")
 
 @bot.command()
-async def ladybug(ctx):
-    await ctx.send("🐞 ladybug! good luck! make a wish!")
+async def selfcare(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  await ctx.send(f"{target.display_name} practice self care")
 
 @bot.command()
-async def butterfly(ctx):
-    await ctx.send("🦋 butterfly! transformation and beauty!")
+async def mentalhealth(ctx):
+  await ctx.send("mental health check")
 
 @bot.command()
-async def dragonfly(ctx):
-    await ctx.send("🦋 dragonfly! change and adaptability!")
+async def vent(ctx, *, message: str = None):
+  if not message:
+    await ctx.send("what you venting about bro?")
+    return
+  await ctx.send(f"{ctx.author.display_name} is venting: {message}")
 
 @bot.command()
-async def firefly(ctx):
-    await ctx.send("✨ firefly! little lights in the dark!")
+async def therapy(ctx):
+  therapies = ["have you tried going outside?", "maybe touch some grass?", "have you considered not gambling?"]
+  await ctx.send(f"therapy session: {random.choice(therapies)}")
 
 @bot.command()
-async def moth(ctx):
-    await ctx.send("🦋 moth! drawn to the flame! like you to embers!")
+async def advice(ctx):
+  advices = ["dont gamble more than you can afford", "save some embers", "feed your creatures", "daily streaks matter"]
+  await ctx.send(f"advice: {random.choice(advices)}")
 
 @bot.command()
-async def cicada(ctx):
-    await ctx.send("🦗 cicada! loud and annoying! summer vibes!")
+async def wisdom(ctx):
+  wisdoms = ["the ember you save today is the ember you gamble tomorrow", "a creature fed is a creature loyal"]
+  await ctx.send(f"wisdom: {random.choice(wisdoms)}")
 
 @bot.command()
-async def cricket(ctx):
-    await ctx.send("🦗 cricket! chirp chirp! good luck in some places!")
+async def lifehack(ctx):
+  hacks = ["do f daily every day", "beg when youre broke", "vault your embers"]
+  await ctx.send(f"life hack: {random.choice(hacks)}")
 
 @bot.command()
-async def grasshopper(ctx):
-    await ctx.send("🦗 grasshopper! leap of faith!")
+async def protip(ctx):
+  await lifehack(ctx)
 
 @bot.command()
-async def prayingmantis(ctx):
-    await ctx.send("🦗 praying mantis! patience and stillness!")
+async def hacklife(ctx):
+  await lifehack(ctx)
 
 @bot.command()
-async def beetle(ctx):
-    await ctx.send("🪲 beetle! scarab means rebirth!")
+async def motivation(ctx):
+  motivations = ["you can do it", "believe in yourself", "never give up"]
+  await ctx.send(f"motivation: {random.choice(motivations)}")
 
 @bot.command()
-async def scarab(ctx):
-    await ctx.send("🪲 scarab! ancient egyptian symbol of rebirth!")
+async def demotivation(ctx):
+  demotivations = ["youre probably gonna lose", "your creatures are plotting against you"]
+  await ctx.send(f"demotivation: {random.choice(demotivations)}")
 
 @bot.command()
-async def dungbeetle(ctx):
-    await ctx.send("💩🪲 dung beetle! rolls poop! nature is weird!")
+async def pep_talk(ctx):
+  await motivation(ctx)
 
 @bot.command()
-async def ant(ctx):
-    await ctx.send("🐜 ant! teamwork makes the dream work!")
+async def reality_check(ctx):
+  data = load_user(ctx.author.id)
+  await ctx.send(f"reality check: you have {data['embers']} embers")
 
 @bot.command()
-async def beehive(ctx):
-    await ctx.send("🐝 beehive! busy bees making honey!")
+async def wake_up(ctx):
+  await ctx.send("WAKE UP")
 
 @bot.command()
-async def honey(ctx):
-    await ctx.send("🍯 honey! sweet and golden!")
+async def reality(ctx):
+  await ctx.send("reality: youre spending too much time on discord")
 
 @bot.command()
-async def beesting(ctx):
-    await ctx.send("🐝 bee sting! ouch! that hurt!")
+async def exist(ctx):
+  await ctx.send("why do we exist")
 
 @bot.command()
-async def wasp(ctx):
-    await ctx.send("🐝 wasp! angry! why do they exist?!")
+async def void_cmd(ctx):
+  await ctx.send("you stare into the void")
 
 @bot.command()
-async def hornet(ctx):
-    await ctx.send("🐝 hornet! even angrier! run!")
+async def abyss(ctx):
+  await ctx.send("the abyss gazes also")
 
 @bot.command()
-async def scorpion(ctx):
-    await ctx.send("🦂 scorpion! venomous! desert vibes!")
+async def chaos(ctx):
+  await ctx.send("CHAOS")
 
 @bot.command()
-async def snake2(ctx):
-    await ctx.send("🐍 snake! sssss! some are venomous!")
+async def order(ctx):
+  await ctx.send("ORDER")
 
 @bot.command()
-async def cobra(ctx):
-    await ctx.send("🐍 cobra! hood up! dangerous!")
+async def balance_cmd(ctx):
+  await ctx.send("balance is key")
 
 @bot.command()
-async def python2(ctx):
-    await ctx.send("🐍 python! not the programming language! constrictor!")
+async def yin_yang(ctx):
+  await ctx.send("yin and yang")
 
 @bot.command()
-async def anaconda(ctx):
-    await ctx.send("🐍 anaconda! my anaconda don't want none!")
+async def karma(ctx):
+  data = load_user(ctx.author.id)
+  karma = data.get("karma", random.randint(-100, 100))
+  await ctx.send(f"your karma: {karma}")
 
 @bot.command()
-async def boa(ctx):
-    await ctx.send("🐍 boa constrictor! squeeze!")
+async def good_karma(ctx):
+  data = load_user(ctx.author.id)
+  if "karma" not in data:
+    data["karma"] = 0
+  data["karma"] += 10
+  save_user(ctx.author.id, data)
+  await ctx.send("you did something good +10 karma")
 
 @bot.command()
-async def viper(ctx):
-    await ctx.send("🐍 viper! venomous! watch out!")
+async def bad_karma(ctx):
+  data = load_user(ctx.author.id)
+  if "karma" not in data:
+    data["karma"] = 0
+  data["karma"] -= 10
+  save_user(ctx.author.id, data)
+  await ctx.send("you did something bad -10 karma")
 
 @bot.command()
-async def rattlesnake(ctx):
-    await ctx.send("🐍 rattlesnake! rattle rattle! warning!")
+async def fortune_cookie(ctx):
+  fortunes = ["you will find embers", "beware of scams", "a stranger will give you embers"]
+  await ctx.send(f"fortune cookie: {random.choice(fortunes)}")
 
 @bot.command()
-async def komodo(ctx):
-    await ctx.send("🦎 komodo dragon! venomous bite! big lizard!")
+async def horoscope(ctx):
+  horoscopes = ["today is your lucky day", "avoid gambling today", "invest wisely"]
+  await ctx.send(f"horoscope: {random.choice(horoscopes)}")
 
 @bot.command()
-async def gecko(ctx):
-    await ctx.send("🦎 gecko! small lizard! insurance mascot!")
+async def tarot_card(ctx):
+  cards = ["the fool", "death", "the tower", "the sun"]
+  await ctx.send(f"tarot card: {random.choice(cards)}")
 
 @bot.command()
-async def chameleon(ctx):
-    await ctx.send("🦎 chameleon! changes colors! blend in!")
+async def crystal_ball(ctx):
+  await ctx.send("crystal ball shows embers")
 
 @bot.command()
-async def iguana(ctx):
-    await ctx.send("🦎 iguana! big lizard! vegetarian!")
+async def palm_reading(ctx):
+  await ctx.send("your palm says you have hands")
 
 @bot.command()
-async def turtle(ctx):
-    await ctx.send("🐢 turtle! slow and steady wins the race!")
+async def aura_reading(ctx):
+  colors = ["red", "blue", "green", "purple"]
+  await ctx.send(f"your aura is {random.choice(colors)}")
 
 @bot.command()
-async def tortoise(ctx):
-    await ctx.send("🐢 tortoise! land turtle! very slow!")
+async def zodiac_sign(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  signs = ["aries", "taurus", "gemini", "cancer"]
+  await ctx.send(f"{target.display_name} is a {random.choice(signs)}")
 
 @bot.command()
-async def crocodile(ctx):
-    await ctx.send("🐊 crocodile! snap snap! dangerous!")
+async def compatibility(ctx, user1: discord.Member = None, user2: discord.Member = None):
+  if not user1 or not user2:
+    await ctx.send("check compatibility between who bro?")
+    return
+  percent = random.randint(0, 100)
+  await ctx.send(f"{user1.display_name} + {user2.display_name} = {percent}% compatible")
 
 @bot.command()
-async def alligator(ctx):
-    await ctx.send("🐊 alligator! see you later! florida vibes!")
+async def soulmate(ctx):
+  members = [m for m in ctx.guild.members if not m.bot and m != ctx.author]
+  if not members:
+    await ctx.send("no soulmate found")
+    return
+  soulmate = random.choice(members)
+  await ctx.send(f"{ctx.author.display_name}'s soulmate is {soulmate.display_name}")
 
 @bot.command()
-async def frog2(ctx):
-    await ctx.send("🐸 frog! ribbit ribbit! prince potential!")
+async def enemy(ctx):
+  members = [m for m in ctx.guild.members if not m.bot and m != ctx.author]
+  if not members:
+    await ctx.send("no enemies found")
+    return
+  enemy = random.choice(members)
+  await ctx.send(f"{ctx.author.display_name}'s enemy is {enemy.display_name}")
 
 @bot.command()
-async def toad(ctx):
-    await ctx.send("🐸 toad! wartier than frogs! still cute!")
+async def bestfriend(ctx):
+  members = [m for m in ctx.guild.members if not m.bot and m != ctx.author]
+  if not members:
+    await ctx.send("no friends found")
+    return
+  friend = random.choice(members)
+  await ctx.send(f"{ctx.author.display_name}'s best friend is {friend.display_name}")
 
 @bot.command()
-async def salamander(ctx):
-    await ctx.send("🦎 salamander! fire spirit! amphibian!")
+async def rival(ctx):
+  members = [m for m in ctx.guild.members if not m.bot and m != ctx.author]
+  if not members:
+    await ctx.send("no rivals found")
+    return
+  rival = random.choice(members)
+  await ctx.send(f"{ctx.author.display_name}'s rival is {rival.display_name}")
 
 @bot.command()
-async def newt(ctx):
-    await ctx.send("🦎 newt! tiny salamander! eye of newt!")
+async def twin(ctx):
+  members = [m for m in ctx.guild.members if not m.bot and m != ctx.author]
+  if not members:
+    await ctx.send("no twin found")
+    return
+  twin = random.choice(members)
+  await ctx.send(f"{ctx.author.display_name}'s twin is {twin.display_name}")
 
 @bot.command()
-async def axolotl(ctx):
-    await ctx.send("🦎 axolotl! cute! regenerates! minecraft!")
+async def clone(ctx):
+  await twin(ctx)
 
 @bot.command()
-async def platypus(ctx):
-    await ctx.send("🦆 platypus! duck bill! beaver tail! venomous! weird!")
+async def doppelganger(ctx):
+  await twin(ctx)
 
 @bot.command()
-async def echidna(ctx):
-    await ctx.send("🦔 echidna! spiny anteater! knuckles!")
+async def spirit_animal(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  animals = ["wolf", "eagle", "tiger", "dolphin"]
+  await ctx.send(f"{target.display_name}'s spirit animal is a {random.choice(animals)}")
 
 @bot.command()
-async def kangaroo(ctx):
-    await ctx.send("🦘 kangaroo! hop hop! pouch baby!")
+async def spirit_color(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  colors = ["red", "blue", "green", "purple"]
+  await ctx.send(f"{target.display_name}'s spirit color is {random.choice(colors)}")
 
 @bot.command()
-async def koala(ctx):
-    await ctx.send("🐨 koala! sleeps 20 hours! eucalyptus only!")
+async def spirit_number(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  num = random.randint(1, 100)
+  await ctx.send(f"{target.display_name}'s spirit number is {num}")
 
 @bot.command()
-async def wombat2(ctx):
-    await ctx.send("🐻 wombat! cube poop! australia!")
+async def spirit_food(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  foods = ["pizza", "burger", "taco", "sushi"]
+  await ctx.send(f"{target.display_name}'s spirit food is {random.choice(foods)}")
 
 @bot.command()
-async def tasmanian(ctx):
-    await ctx.send("👿 tasmanian devil! spinny! aggressive!")
+async def spirit_drink(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  drinks = ["coffee", "tea", "water", "soda"]
+  await ctx.send(f"{target.display_name}'s spirit drink is {random.choice(drinks)}")
 
 @bot.command()
-async def dingo(ctx):
-    await ctx.send("🐕 dingo! ate my baby! australia!")
+async def spirit_song(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  songs = ["bohemian rhapsody", "lose yourself", "imagine"]
+  await ctx.send(f"{target.display_name}'s spirit song is {random.choice(songs)}")
 
 @bot.command()
-async def emu(ctx):
-    await ctx.send("🐦 emu! won a war against australia! true story!")
+async def spirit_movie(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  movies = ["the matrix", "inception", "fight club"]
+  await ctx.send(f"{target.display_name}'s spirit movie is {random.choice(movies)}")
 
 @bot.command()
-async def cassowary(ctx):
-    await ctx.send("🐦 cassowary! most dangerous bird! kick!")
+async def spirit_game(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  games = ["minecraft", "dark souls", "zelda"]
+  await ctx.send(f"{target.display_name}'s spirit game is {random.choice(games)}")
 
 @bot.command()
-async def kiwi(ctx):
-    await ctx.send("🥝 kiwi! flightless! new zealand!")
+async def spirit_hobby(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  hobbies = ["gaming", "reading", "sports", "cooking"]
+  await ctx.send(f"{target.display_name}'s spirit hobby is {random.choice(hobbies)}")
 
 @bot.command()
-async def kakapo(ctx):
-    await ctx.send("🦜 kakapo! flightless parrot! booming!")
+async def spirit_job(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  jobs = ["programmer", "chef", "artist", "musician"]
+  await ctx.send(f"{target.display_name}'s spirit job is {random.choice(jobs)}")
 
 @bot.command()
-async def penguin(ctx):
-    await ctx.send("🐧 penguin! waddle waddle! antarctica!")
+async def spirit_car(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  cars = ["lambo", "ferrari", "tesla", "honda"]
+  await ctx.send(f"{target.display_name}'s spirit car is a {random.choice(cars)}")
 
 @bot.command()
-async def puffin(ctx):
-    await ctx.send("🐦 puffin! colorful beak! clown of the sea!")
+async def spirit_house(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  houses = ["mansion", "apartment", "shack", "castle"]
+  await ctx.send(f"{target.display_name}'s spirit house is a {random.choice(houses)}")
 
 @bot.command()
-async def albatross(ctx):
-    await ctx.send("🐦 albatross! huge wingspan! sailors' superstition!")
+async def spirit_phone(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  phones = ["iphone", "samsung", "nokia", "flip phone"]
+  await ctx.send(f"{target.display_name}'s spirit phone is a {random.choice(phones)}")
 
 @bot.command()
-async def seagull(ctx):
-    await ctx.send("🐦 seagull! mine mine mine! steals food!")
+async def spirit_pet(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  pets = ["dog", "cat", "dragon", "phoenix"]
+  await ctx.send(f"{target.display_name}'s spirit pet is a {random.choice(pets)}")
 
 @bot.command()
-async def pelican(ctx):
-    await ctx.send("🐦 pelican! big beak! can hold lots!")
+async def spirit_weapon(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  weapons = ["sword", "bow", "staff", "dagger"]
+  await ctx.send(f"{target.display_name}'s spirit weapon is a {random.choice(weapons)}")
 
 @bot.command()
-async def flamingo(ctx):
-    await ctx.send("🦩 flamingo! pink! stands on one leg!")
+async def spirit_element(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  elements = ["fire", "water", "earth", "air"]
+  await ctx.send(f"{target.display_name}'s spirit element is {random.choice(elements)}")
 
 @bot.command()
-async def peacock(ctx):
-    await ctx.send("🦚 peacock! beautiful feathers! show off!")
+async def spirit_magic(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  magics = ["fireball", "healing", "teleportation", "invisibility"]
+  await ctx.send(f"{target.display_name}'s spirit magic is {random.choice(magics)}")
 
 @bot.command()
-async def swan(ctx):
-    await ctx.send("🦢 swan! elegant! aggressive! don't mess with them!")
+async def spirit_villain(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  villains = ["the joker", "thanos", "voldemort"]
+  await ctx.send(f"{target.display_name}'s spirit villain is {random.choice(villains)}")
 
 @bot.command()
-async def goose(ctx):
-    await ctx.send("🦢 goose! honk honk! territorial! scary!")
+async def spirit_hero(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  heroes = ["batman", "superman", "spiderman"]
+  await ctx.send(f"{target.display_name}'s spirit hero is {random.choice(heroes)}")
 
 @bot.command()
-async def duck(ctx):
-    await ctx.send("🦆 duck! quack quack! bread!")
+async def spirit_celebrity(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  celebs = ["the rock", "keanu reeves", "beyonce"]
+  await ctx.send(f"{target.display_name}'s spirit celebrity is {random.choice(celebs)}")
 
 @bot.command()
-async def chicken2(ctx):
-    await ctx.send("🐔 chicken! cluck cluck! why did it cross the road?")
+async def spirit_meme(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  memes = ["doge", "pepe", "stonks"]
+  await ctx.send(f"{target.display_name}'s spirit meme is {random.choice(memes)}")
 
 @bot.command()
-async def rooster(ctx):
-    await ctx.send("🐓 rooster! cock-a-doodle-doo! early wake up!")
+async def spirit_emoji(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  emojis = ["fire", "diamond", "clover", "star"]
+  await ctx.send(f"{target.display_name}'s spirit emoji is {random.choice(emojis)}")
 
 @bot.command()
-async def turkey2(ctx):
-    await ctx.send("🦃 turkey! gobble gobble! thanksgiving dinner!")
+async def spirit_quote(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  quotes = ["just do it", "live laugh love", "yolo"]
+  await ctx.send(f"{target.display_name}'s spirit quote is: {random.choice(quotes)}")
 
 @bot.command()
-async def pigeon(ctx):
-    await ctx.send("🐦 pigeon! city bird! coo coo! rats with wings!")
+async def spirit_word(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  words = ["ember", "flame", "chaos", "destiny"]
+  await ctx.send(f"{target.display_name}'s spirit word is {random.choice(words)}")
 
 @bot.command()
-async def dove(ctx):
-    await ctx.send("🕊️ dove! peace! love! harmony!")
+async def spirit_number_lucky(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  num = random.randint(1, 100)
+  await ctx.send(f"{target.display_name}'s lucky number is {num}")
 
 @bot.command()
-async def hawk(ctx):
-    await ctx.send("🦅 hawk! sharp eyes! predator!")
+async def spirit_day(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+  await ctx.send(f"{target.display_name}'s lucky day is {random.choice(days)}")
 
 @bot.command()
-async def eagle(ctx):
-    await ctx.send("🦅 eagle! freedom! america! screech!")
+async def spirit_month(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  months = ["january", "february", "march", "april", "may", "june"]
+  await ctx.send(f"{target.display_name}'s lucky month is {random.choice(months)}")
 
 @bot.command()
-async def falcon(ctx):
-    await ctx.send("🦅 falcon! fast! dive! peregrine!")
+async def spirit_season(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  seasons = ["spring", "summer", "fall", "winter"]
+  await ctx.send(f"{target.display_name}'s lucky season is {random.choice(seasons)}")
 
 @bot.command()
-async def owl2(ctx):
-    await ctx.send("🦉 owl! wise! hoot hoot! night hunter!")
+async def spirit_time(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  hour = random.randint(1, 12)
+  minute = random.randint(0, 59)
+  ampm = random.choice(["am", "pm"])
+  await ctx.send(f"{target.display_name}'s lucky time is {hour}:{minute:02d} {ampm}")
 
 @bot.command()
-async def vulture(ctx):
-    await ctx.send("🦅 vulture! scavenger! cleans up!")
+async def spirit_place(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  places = ["the beach", "the mountains", "the city", "the forest"]
+  await ctx.send(f"{target.display_name}'s lucky place is {random.choice(places)}")
 
 @bot.command()
-async def condor(ctx):
-    await ctx.send("🦅 condor! huge! andes mountains!")
+async def spirit_crystal(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  crystals = ["amethyst", "quartz", "ruby", "sapphire"]
+  await ctx.send(f"{target.display_name}'s spirit crystal is {random.choice(crystals)}")
 
 @bot.command()
-async def stork(ctx):
-    await ctx.send("🐦 stork! delivers babies! long legs!")
+async def spirit_flower(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  flowers = ["rose", "tulip", "sunflower", "lily"]
+  await ctx.send(f"{target.display_name}'s spirit flower is {random.choice(flowers)}")
 
 @bot.command()
-async def heron(ctx):
-    await ctx.send("🐦 heron! stands still! strikes fast!")
+async def spirit_tree(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  trees = ["oak", "pine", "willow", "birch"]
+  await ctx.send(f"{target.display_name}'s spirit tree is {random.choice(trees)}")
 
 @bot.command()
-async def crane(ctx):
-    await ctx.send("🐦 crane! graceful! origami! japan!")
+async def spirit_gem(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  gems = ["ruby", "sapphire", "emerald", "diamond"]
+  await ctx.send(f"{target.display_name}'s spirit gem is {random.choice(gems)}")
 
 @bot.command()
-async def ostrich(ctx):
-    await ctx.send("🐦 ostrich! can't fly! fast runner! head in sand!")
+async def spirit_metal(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  metals = ["gold", "silver", "iron", "copper"]
+  await ctx.send(f"{target.display_name}'s spirit metal is {random.choice(metals)}")
 
 @bot.command()
-async def hummingbird(ctx):
-    await ctx.send("🐦 hummingbird! tiny! fast wings! nectar!")
+async def spirit_planet(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  planets = ["mercury", "venus", "earth", "mars", "jupiter"]
+  await ctx.send(f"{target.display_name}'s spirit planet is {random.choice(planets)}")
 
 @bot.command()
-async def woodpecker(ctx):
-    await ctx.send("🐦 woodpecker! peck peck peck! headache!")
+async def spirit_star(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  stars = ["sirius", "betelgeuse", "rigel", "vega"]
+  await ctx.send(f"{target.display_name}'s spirit star is {random.choice(stars)}")
 
 @bot.command()
-async def kingfisher(ctx):
-    await ctx.send("🐦 kingfisher! dives for fish! colorful!")
+async def spirit_galaxy(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  galaxies = ["milky way", "andromeda", "triangulum"]
+  await ctx.send(f"{target.display_name}'s spirit galaxy is {random.choice(galaxies)}")
 
 @bot.command()
-async def toucan(ctx):
-    await ctx.send("🐦 toucan! big beak! fruit loops!")
+async def spirit_weather(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  weathers = ["sunny", "rainy", "stormy", "snowy"]
+  await ctx.send(f"{target.display_name}'s spirit weather is {random.choice(weathers)}")
 
 @bot.command()
-async def parrot(ctx):
-    await ctx.send("🦜 parrot! squawk! repeats words! pirate!")
+async def spirit_landscape(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  landscapes = ["mountains", "ocean", "forest", "desert"]
+  await ctx.send(f"{target.display_name}'s spirit landscape is {random.choice(landscapes)}")
 
 @bot.command()
-async def macaw(ctx):
-    await ctx.send("🦜 macaw! big parrot! colorful! rainforest!")
+async def spirit_architecture(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  archs = ["gothic", "modern", "classical", "futuristic"]
+  await ctx.send(f"{target.display_name}'s spirit architecture is {random.choice(archs)}")
 
 @bot.command()
-async def cockatoo(ctx):
-    await ctx.send("🦜 cockatoo! crest! loud! australia!")
+async def spirit_art(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  arts = ["impressionism", "surrealism", "abstract", "realism"]
+  await ctx.send(f"{target.display_name}'s spirit art style is {random.choice(arts)}")
 
 @bot.command()
-async def cockatiel(ctx):
-    await ctx.send("🦜 cockatiel! small crest! cute!")
+async def spirit_music(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  genres = ["rock", "pop", "hip hop", "jazz"]
+  await ctx.send(f"{target.display_name}'s spirit music genre is {random.choice(genres)}")
 
 @bot.command()
-async def budgie(ctx):
-    await ctx.send("🦜 budgie! small parakeet! popular pet!")
+async def spirit_dance(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  dances = ["ballet", "hip hop", "salsa", "tango"]
+  await ctx.send(f"{target.display_name}'s spirit dance is {random.choice(dances)}")
 
 @bot.command()
-async def canary(ctx):
-    await ctx.send("🐦 canary! sings! coal mine warning!")
+async def spirit_sport(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  sports = ["basketball", "soccer", "tennis", "swimming"]
+  await ctx.send(f"{target.display_name}'s spirit sport is {random.choice(sports)}")
 
 @bot.command()
-async def finch(ctx):
-    await ctx.send("🐦 finch! small! darwin studied them!")
+async def spirit_boardgame(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  games = ["chess", "monopoly", "risk", "clue"]
+  await ctx.send(f"{target.display_name}'s spirit board game is {random.choice(games)}")
 
 @bot.command()
-async def sparrow(ctx):
-    await ctx.send("🐦 sparrow! common! small! everywhere!")
+async def spirit_cardgame(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  games = ["poker", "blackjack", "uno", "magic"]
+  await ctx.send(f"{target.display_name}'s spirit card game is {random.choice(games)}")
 
 @bot.command()
-async def crow2(ctx):
-    await ctx.send("🐦‍⬛ crow! smart! tool user! ominous!")
+async def spirit_videogame(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  games = ["minecraft", "dark souls", "zelda", "mario"]
+  await ctx.send(f"{target.display_name}'s spirit video game is {random.choice(games)}")
 
 @bot.command()
-async def magpie(ctx):
-    await ctx.send("🐦 magpie! steals shiny things! chatty!")
+async def spirit_book(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  books = ["harry potter", "lord of the rings", "game of thrones"]
+  await ctx.send(f"{target.display_name}'s spirit book is {random.choice(books)}")
 
 @bot.command()
-async def jay(ctx):
-    await ctx.send("🐦 jay! blue! noisy! forest!")
+async def spirit_author(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  authors = ["shakespeare", "tolkien", "rowling"]
+  await ctx.send(f"{target.display_name}'s spirit author is {random.choice(authors)}")
 
 @bot.command()
-async def cardinal(ctx):
-    await ctx.send("🐦 cardinal! red! state bird! pretty!")
+async def spirit_poet(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  poets = ["shakespeare", "poe", "frost"]
+  await ctx.send(f"{target.display_name}'s spirit poet is {random.choice(poets)}")
 
 @bot.command()
-async def bluebird(ctx):
-    await ctx.send("🐦 bluebird! blue! happiness symbol!")
+async def spirit_painter(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  painters = ["van gogh", "picasso", "davinci"]
+  await ctx.send(f"{target.display_name}'s spirit painter is {random.choice(painters)}")
 
 @bot.command()
-async def robin(ctx):
-    await ctx.send("🐦 robin! red breast! spring!")
+async def spirit_scientist(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  scientists = ["einstein", "newton", "tesla"]
+  await ctx.send(f"{target.display_name}'s spirit scientist is {random.choice(scientists)}")
 
 @bot.command()
-async def nightingale(ctx):
-    await ctx.send("🐦 nightingale! beautiful song! night singer!")
+async def spirit_philosopher(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  philosophers = ["socrates", "plato", "aristotle"]
+  await ctx.send(f"{target.display_name}'s spirit philosopher is {random.choice(philosophers)}")
 
 @bot.command()
-async def mockingbird(ctx):
-    await ctx.send("🐦 mockingbird! mimics sounds! to kill one is a sin!")
+async def spirit_inventor(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  inventors = ["edison", "tesla", "da vinci"]
+  await ctx.send(f"{target.display_name}'s spirit inventor is {random.choice(inventors)}")
 
 @bot.command()
-async def lark(ctx):
-    await ctx.send("🐦 lark! sings while flying! early riser!")
+async def spirit_explorer(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  explorers = ["columbus", "magellan", "marco polo"]
+  await ctx.send(f"{target.display_name}'s spirit explorer is {random.choice(explorers)}")
 
 @bot.command()
-async def wren(ctx):
-    await ctx.send("🐦 wren! tiny! loud song! brown!")
+async def spirit_warrior(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  warriors = ["spartan", "samurai", "viking"]
+  await ctx.send(f"{target.display_name}'s spirit warrior is a {random.choice(warriors)}")
 
 @bot.command()
-async def thrush(ctx):
-    await ctx.send("🐦 thrush! spotted breast! songbird!")
+async def spirit_king(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  kings = ["arthur", "richard", "henry"]
+  await ctx.send(f"{target.display_name}'s spirit king is {random.choice(kings)}")
 
 @bot.command()
-async def blackbird(ctx):
-    await ctx.send("🐦‍⬛ blackbird! beatles song! yellow beak!")
+async def spirit_queen(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  queens = ["elizabeth", "cleopatra", "victoria"]
+  await ctx.send(f"{target.display_name}'s spirit queen is {random.choice(queens)}")
 
 @bot.command()
-async def starling(ctx):
-    await ctx.send("🐦 starling! murmurations! invasive!")
+async def spirit_god(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  gods = ["zeus", "thor", "odin"]
+  await ctx.send(f"{target.display_name}'s spirit god is {random.choice(gods)}")
 
 @bot.command()
-async def grackle(ctx):
-    await ctx.send("🐦 grackle! iridescent! loud! texas!")
+async def spirit_goddess(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  goddesses = ["aphrodite", "athena", "freya"]
+  await ctx.send(f"{target.display_name}'s spirit goddess is {random.choice(goddesses)}")
 
 @bot.command()
-async def meadowlark(ctx):
-    await ctx.send("🐦 meadowlark! yellow! prairie! state bird!")
+async def spirit_mythical(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  creatures = ["dragon", "phoenix", "unicorn"]
+  await ctx.send(f"{target.display_name}'s spirit mythical creature is a {random.choice(creatures)}")
 
 @bot.command()
-async def oriole(ctx):
-    await ctx.send("🐦 oriole! orange and black! baseball!")
+async def spirit_fairy(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  fairies = ["tinkerbell", "tooth fairy", "pixie"]
+  await ctx.send(f"{target.display_name}'s spirit fairy is {random.choice(fairies)}")
 
 @bot.command()
-async def tanager(ctx):
-    await ctx.send("🐦 tanager! red! tropical! pretty!")
+async def spirit_wizard(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  wizards = ["gandalf", "dumbledore", "merlin"]
+  await ctx.send(f"{target.display_name}'s spirit wizard is {random.choice(wizards)}")
 
 @bot.command()
-async def warbler(ctx):
-    await ctx.send("🐦 warbler! small! colorful! migratory!")
+async def spirit_witch(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  witches = ["glinda", "wicked witch", "hermione"]
+  await ctx.send(f"{target.display_name}'s spirit witch is {random.choice(witches)}")
 
 @bot.command()
-async def vireo(ctx):
-    await ctx.send("🐦 vireo! small! eye ring! persistent singer!")
+async def spirit_vampire(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  vamps = ["dracula", "edward", "lestat"]
+  await ctx.send(f"{target.display_name}'s spirit vampire is {random.choice(vamps)}")
 
 @bot.command()
-async def grosbeak(ctx):
-    await ctx.send("🐦 grosbeak! big beak! seed eater!")
+async def spirit_werewolf(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  wolves = ["jacob", "tyler", "scott"]
+  await ctx.send(f"{target.display_name}'s spirit werewolf is {random.choice(wolves)}")
 
 @bot.command()
-async def bunting(ctx):
-    await ctx.send("🐦 bunting! colorful! indigo! painted!")
+async def spirit_zombie(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  zombies = ["walker", "runner", "crawler"]
+  await ctx.send(f"{target.display_name}'s spirit zombie is a {random.choice(zombies)}")
 
 @bot.command()
-async def towhee(ctx):
-    await ctx.send("🐦 towhee! rufous sided! scratch feeder!")
+async def spirit_ghost(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  ghosts = ["casper", "slimer", "patrick swayze"]
+  await ctx.send(f"{target.display_name}'s spirit ghost is {random.choice(ghosts)}")
 
 @bot.command()
-async def thrasher(ctx):
-    await ctx.send("🐦 thrasher! brown! mimics! long tail!")
+async def spirit_demon(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  demons = ["lucifer", "satan", "beelzebub"]
+  await ctx.send(f"{target.display_name}'s spirit demon is {random.choice(demons)}")
 
 @bot.command()
-async def catbird(ctx):
-    await ctx.send("🐦 catbird! mews! gray! secretive!")
+async def spirit_angel(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  angels = ["michael", "gabriel", "raphael"]
+  await ctx.send(f"{target.display_name}'s spirit angel is {random.choice(angels)}")
 
 @bot.command()
-async def shrike(ctx):
-    await ctx.send("🐦 shrike! butcher bird! impales prey!")
+async def spirit_dragon(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  dragons = ["smaug", "drogon", "toothless"]
+  await ctx.send(f"{target.display_name}'s spirit dragon is {random.choice(dragons)}")
 
 @bot.command()
-async def kingbird(ctx):
-    await ctx.send("🐦 kingbird! tyrant flycatcher! attacks hawks!")
+async def spirit_phoenix(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  phoenixes = ["fawkes", "ho-oh", "jean grey"]
+  await ctx.send(f"{target.display_name}'s spirit phoenix is {random.choice(phoenixes)}")
 
 @bot.command()
-async def phoebe(ctx):
-    await ctx.send("🐦 phoebe! says its name! tail wags!")
+async def spirit_unicorn(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  unicorns = ["charlie", "twilight sparkle"]
+  await ctx.send(f"{target.display_name}'s spirit unicorn is {random.choice(unicorns)}")
 
 @bot.command()
-async def flycatcher(ctx):
-    await ctx.send("🐦 flycatcher! catches flies! midair!")
+async def spirit_griffin(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  griffins = ["buckbeak", "griffin"]
+  await ctx.send(f"{target.display_name}'s spirit griffin is {random.choice(griffins)}")
 
 @bot.command()
-async def swallow(ctx):
-    await ctx.send("🐦 swallow! forked tail! aerial! mud nest!")
+async def spirit_kraken(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  krakens = ["the kraken", "cthulhu"]
+  await ctx.send(f"{target.display_name}'s spirit kraken is {random.choice(krakens)}")
 
 @bot.command()
-async def martin(ctx):
-    await ctx.send("🐦 martin! purple! colony! gourd houses!")
+async def spirit_chimera(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  chimeras = ["the chimera", "the manticore"]
+  await ctx.send(f"{target.display_name}'s spirit chimera is {random.choice(chimeras)}")
 
 @bot.command()
-async def swift(ctx):
-    await ctx.send("🐦 swift! fast! never lands! almost!")
+async def spirit_sphinx(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  sphinxes = ["the sphinx", "the riddler"]
+  await ctx.send(f"{target.display_name}'s spirit sphinx is {random.choice(sphinxes)}")
 
 @bot.command()
-async def nighthawk(ctx):
-    await ctx.send("🐦 nighthawk! dusk! booming! city nests!")
+async def spirit_minotaur(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  minotaurs = ["the minotaur", "asterion"]
+  await ctx.send(f"{target.display_name}'s spirit minotaur is {random.choice(minotaurs)}")
 
 @bot.command()
-async def whippoorwill(ctx):
-    await ctx.send("🐦 whippoorwill! says name! night! folklore!")
+async def spirit_centaur(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  centaurs = ["chiron", "the centaur"]
+  await ctx.send(f"{target.display_name}'s spirit centaur is {random.choice(centaurs)}")
 
 @bot.command()
-async def chuck(ctx):
-    await ctx.send("🐦 chuck-will's-widow! similar! southern!")
+async def spirit_mermaid(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  mermaids = ["ariel", "the little mermaid"]
+  await ctx.send(f"{target.display_name}'s spirit mermaid is {random.choice(mermaids)}")
 
 @bot.command()
-async def poorwill(ctx):
-    await ctx.send("🐦 poorwill! poor will! hibernates!")
+async def spirit_pirate(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  pirates = ["jack sparrow", "blackbeard"]
+  await ctx.send(f"{target.display_name}'s spirit pirate is {random.choice(pirates)}")
 
 @bot.command()
-async def nightjar(ctx):
-    await ctx.send("🐦 nightjar! night! jar? weird name!")
+async def spirit_ninja(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  ninjas = ["naruto", "sasuke"]
+  await ctx.send(f"{target.display_name}'s spirit ninja is {random.choice(ninjas)}")
 
 @bot.command()
-async def potoo(ctx):
-    await ctx.send("🐦 potoo! weird! big eyes! camouflage!")
+async def spirit_samurai(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  samurais = ["miyamoto musashi", "the last samurai"]
+  await ctx.send(f"{target.display_name}'s spirit samurai is {random.choice(samurais)}")
 
 @bot.command()
-async def frogmouth(ctx):
-    await ctx.send("🐦 frogmouth! wide mouth! australia!"
-)
+async def spirit_knight(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  knights = ["king arthur", "lancelot"]
+  await ctx.send(f"{target.display_name}'s spirit knight is {random.choice(knights)}")
 
-# ==================== HELP COMMAND WITH PAGES ====================
 @bot.command()
-async def help(ctx, page: int = 1):
-    if page == 1:
-        embed = discord.Embed(title="flame bot commands - page 1/3", color=0xff6b35)
-        embed.add_field(name="economy", value="embers, daily, streak, beg, scam, invest, heist, loan, repay, burn, send, deposit, withdraw, rob, work, crime, slut, fish, hunt, dig, search, postmeme, buy, shop, inventory, sell, rich, poor, level, xp, leaderboard, bank, tax, lottery, slots, blackjack, roulette, horse", inline=False)
-        embed.add_field(name="creatures", value="summon, cage, release, feed, neglect, mood, evolve, breed, sacrifice, rename, favorite, trade, auction, bid, inspect, adopt, kidnap", inline=False)
-        embed.add_field(name="combat", value="duel, raid, ambush, defend, berserk, bribe, flee, taunt, combo, revive, wager, rank", inline=False)
-        embed.add_field(name="gambling", value="dice, shells, flip, spin, surge, vault, pick, chase, chamber, rig", inline=False)
-        embed.add_field(name="social", value="marry, divorce, will, cult, betray, tribute, roast, confess", inline=False)
-    elif page == 2:
-        embed = discord.Embed(title="flame bot commands - page 2/3", color=0xff6b35)
-        embed.add_field(name="utility", value="tutorial, stats, server, global, settings, cooldowns, changelog", inline=False)
-        embed.add_field(name="weird", value="dream, curse, bless, time, weather, oracle, mimic, glitch, lore, quit", inline=False)
-        embed.add_field(name="moderation", value="kick, ban, unban, mute, unmute, warn, warnings, clearwarns, purge, nick, slowmode, lock, unlock, addrole, removerole, createrole, deleterole", inline=False)
-        embed.add_field(name="admin", value="give, set, remove, wipe (owner only)", inline=False)
-        embed.add_field(name="fun", value="pet, hug, slap, punch, kiss, kill, poke, tickle, wave, wink, dance, cry, laugh, sleep, eat, drink, sing, rap, joke, fact, quote, meme, cat, dog, bird, fishy", inline=False)
-    elif page == 3:
-        embed = discord.Embed(title="flame bot commands - page 3/3", color=0xff6b35)
-        embed.add_field(name="games", value="rps, ttt, connect4, hangman, guess, trivia, wouldyourather, truth, dare", inline=False)
-        embed.add_field(name="text", value="reverse, len, uppercase, lowercase, mock, clap, vaporwave, emojify, spoiler, ascii, textart, banner, zalgo, tiny, wide, strikethrough, bold, italic, underline, code, inlinecode, quoteblock", inline=False)
-        embed.add_field(name="info", value="avatar, userinfo, roleinfo, channelinfo, botinfo, ping, uptime", inline=False)
-        embed.add_field(name="reactions", value="compliment, insult, motivation, bored, fortune, magic8ball, rate, howgay, howsimp, howsmart, howdumb, howlucky, ship", inline=False)
-        embed.add_field(name="meme", value="stonks, notstonks, hold, pump, dump, moon, lambo, yacht, mansion, brokeboy, richboy, ballin, flex, brokecheck, flexon, humble, grind, hustle, grindset, sigma, alpha, beta, omega, chad, virgin, gigachad, soyjack, wojak, doomer, bloomer, coomer, consoomer, boomer, zoomer, millennial, genz, genalpha, skibidi, sigmaface, mewing, looksmaxxing, mog, heightmaxx, gymmaxx, moneymaxx, statusmaxx, rizz, aura, gyatt, ohio, grimaceshake, quandale, goofy, ahh, bruh, bruhmoment, cringe, based, redpilled, bluepilled, blackpilled, whitepilled, greenpilled, purplepilled, yellowpilled, orangepilled, pinkpilled, graypilled, brownpilled, copium, hopium, delusion, realitycheck, wakeup, matrix, redpill, bluepill, neo, morpheus, trinity, agent, smith, spoon, simulation, npc, maincharacter, sidecharacter, extras, protagonist, antagonist, villain, hero, sidekick, mentor, loveinterest, comicrelief, tragicbackstory, plotarmor, plottwist, cliffhanger, sequel, prequel, reboot, directorcut, bloopers, credits, oscar, grammy, emmy, nobel, pulitzer, trophy, medal, crown, king, queen, emperor, god, mortal, demigod, titan, giant, dwarf, elf, orc, goblin, troll, fairy, wizard, witch, warlock, sorcerer, druid, bard, rogue, paladin, cleric, monk, ranger, barbarian, fighter, artificer, bloodhunter, dungeonmaster, criticalhit, criticalfail, nat20, nat1, initiative, perception, stealth, persuasion, intimidation, deception, insight, investigation, arcana, history, nature, religion, survival, medicine, athletics, acrobatics, sleight, performance, animalhandling, longrest, shortrest, leveledup, exp, skilltree, respec, multiclass, feat, spellslot, cantrip, fireball, lightningbolt, healingword, curewounds, raisedead, resurrection, trueresurrection, wish, simulacrum, clone, polymorph, wildshape, rage2, reckless, sneakattack, cunningaction, evasion, uncannydodge, secondwind, actionsurge, extraattack, indomitable, channeldivinity, divinesmite, layonhands, auraofprotection, findstealth, findgreaterstealth, eldritchblast, hex, agonizingblast, repellingblast, pactweapon, pactofthechain, pactofthetome, pactoftheblade, invocations, maskofmanyfaces, devilssight, agonizing, patron, boon, legendary, lairaction, regionaleffects, mythic, artifact, relic, legendaryresistance, magicitem, identify, attunement, curseditem, removecurse, dispelmagic, counterspell, antimagic, deadmagic, wildmagic, tidesofchaos, bendluck, harrowing, darkgift, corruption, madness, sanity, insanity, phobia, paranoia, hallucination, delusion2, amnesia, multiplepersonalities, possessed, exorcism, holywater, crucifix, garlic, silver, woodenstake, sunlight, moonlight, fullmoon, newmoon, bloodmoon, eclipse, constellations, shootingstar, aurora, rainbow, potofgold, leprechaun, shamrock, fourleafclover, horseshoe, rabbitfoot, wishbone, penny, headsup, knockwood, blackcat, brokenmirror, ladder, friday13, spillingsalt, umbrella, crow, raven, owl, bat2, spider2, ladybug, butterfly, dragonfly, firefly, moth, cicada, cricket, grasshopper, prayingmantis, beetle, scarab, dungbeetle, ant, beehive, honey, beesting, wasp, hornet, scorpion, snake2, cobra, python2, anaconda, boa, viper, rattlesnake, komodo, gecko, chameleon, iguana, turtle, tortoise, crocodile, alligator, frog2, toad, salamander, newt, axolotl, platypus, echidna, kangaroo, koala, wombat2, tasmanian, dingo, emu, cassowary, kiwi, kakapo, penguin, puffin, albatross, seagull, pelican, flamingo, peacock, swan, goose, duck, chicken2, rooster, turkey2, pigeon, dove, hawk, eagle, falcon, owl2, vulture, condor, stork, heron, crane, ostrich, hummingbird, woodpecker, kingfisher, toucan, parrot, macaw, cockatoo, cockatiel, budgie, canary, finch, sparrow, crow2, magpie, jay, cardinal, bluebird, robin, nightingale, mockingbird, lark, wren, thrush, blackbird, starling, grackle, meadowlark, oriole, tanager, warbler, vireo, grosbeak, bunting, towhee, thrasher, catbird, shrike, kingbird, phoebe, flycatcher, swallow, martin, swift, nighthawk, whippoorwill, chuck, poorwill, nightjar, potoo, frogmouth, present, open, gift, tradeoffer, f, respects, oof, yikes, ripbozo, l, w, dub, dubnation, ratio, cope, seethe, mald, touchgrass, skillissue, gitgud, ez, gg, ggez, rekt, destroyed, demolished, atoms, thanos, snap, balanced, inevitable, ironman, loveyou3000, assemble, onyourleft, hulk, thor, captain, spiderman, batman, superman, flash, wonderwoman, joker, bane, darkknight, rises, whyserious, harley, puddin, batmobile, utilitybelt, gotham, arkham, wayne, stark, jarvis, friday_ai, ultron, vision, wandavision, agatha, multiverse, whatif, zombie, vampire, werewolf, frankenstein, mummy, skeleton, pumpkin, candy, trick, treat, gm, gn, brb, gtg, idk, same, facts, cap, nocap, bet, fr, ongod, sheesh, sus, imposter, vented, emergency, task, ejected, crewmate, dead, ghost, reviveme, rip, afk, back, remind, timer, calc, math, square, sqrt, randomnum, hexconvert, binconvert, base64, decode64, morse, password, uuid, hashmd5, hashsha256, shorten, qr, translate, define, synonym, antonym, spell, count, reversecount, even, prime, fibonacci, factorial, pi, e, goldenratio, convert, temp, color, rgb, gradient", inline=False)
+async def spirit_viking(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  vikings = ["ragnar", "bjorn"]
+  await ctx.send(f"{target.display_name}'s spirit viking is {random.choice(vikings)}")
+
+@bot.command()
+async def spirit_cowboy(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  cowboys = ["clint eastwood", "john wayne"]
+  await ctx.send(f"{target.display_name}'s spirit cowboy is {random.choice(cowboys)}")
+
+@bot.command()
+async def spirit_astronaut(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  astronauts = ["neil armstrong", "buzz aldrin"]
+  await ctx.send(f"{target.display_name}'s spirit astronaut is {random.choice(astronauts)}")
+
+@bot.command()
+async def spirit_detective(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  detectives = ["sherlock holmes", "batman"]
+  await ctx.send(f"{target.display_name}'s spirit detective is {random.choice(detectives)}")
+
+@bot.command()
+async def spirit_spy_cmd(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  spies = ["james bond", "ethan hunt"]
+  await ctx.send(f"{target.display_name}'s spirit spy is {random.choice(spies)}")
+
+@bot.command()
+async def spirit_assassin(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  assassins = ["ezio", "altair"]
+  await ctx.send(f"{target.display_name}'s spirit assassin is {random.choice(assassins)}")
+
+@bot.command()
+async def spirit_mercenary(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  mercs = ["deadpool", "the mandalorian"]
+  await ctx.send(f"{target.display_name}'s spirit mercenary is {random.choice(mercs)}")
+
+@bot.command()
+async def spirit_soldier(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  soldiers = ["captain america", "master chief"]
+  await ctx.send(f"{target.display_name}'s spirit soldier is {random.choice(soldiers)}")
+
+@bot.command()
+async def spirit_pilot(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  pilots = ["maverick", "han solo"]
+  await ctx.send(f"{target.display_name}'s spirit pilot is {random.choice(pilots)}")
+
+@bot.command()
+async def spirit_driver(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  drivers = ["dominic toretto", "the stig"]
+  await ctx.send(f"{target.display_name}'s spirit driver is {random.choice(drivers)}")
+
+@bot.command()
+async def spirit_racer(ctx, target: discord.Member = None):
+  await spirit_driver(ctx, target)
+
+@bot.command()
+async def spirit_surfer(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  surfers = ["kelly slater", "the silver surfer"]
+  await ctx.send(f"{target.display_name}'s spirit surfer is {random.choice(surfers)}")
+
+@bot.command()
+async def spirit_skater(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  skaters = ["tony hawk", "rodney mullen"]
+  await ctx.send(f"{target.display_name}'s spirit skater is {random.choice(skaters)}")
+
+@bot.command()
+async def spirit_climber(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  climbers = ["alex honnold", "edmund hillary"]
+  await ctx.send(f"{target.display_name}'s spirit climber is {random.choice(climbers)}")
+
+@bot.command()
+async def spirit_diver(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  divers = ["jacques cousteau", "the deep sea diver"]
+  await ctx.send(f"{target.display_name}'s spirit diver is {random.choice(divers)}")
+
+@bot.command()
+async def spirit_hunter_cmd(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  hunters = ["geralt", "the witcher"]
+  await ctx.send(f"{target.display_name}'s spirit hunter is {random.choice(hunters)}")
+
+@bot.command()
+async def spirit_ranger(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  rangers = ["aragorn", "the park ranger"]
+  await ctx.send(f"{target.display_name}'s spirit ranger is {random.choice(rangers)}")
+
+@bot.command()
+async def spirit_druid(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  druids = ["the druid", "the nature wizard"]
+  await ctx.send(f"{target.display_name}'s spirit druid is {random.choice(druids)}")
+
+@bot.command()
+async def spirit_paladin(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  paladins = ["the paladin", "the holy knight"]
+  await ctx.send(f"{target.display_name}'s spirit paladin is {random.choice(paladins)}")
+
+@bot.command()
+async def spirit_monk(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  monks = ["the monk", "the shaolin master"]
+  await ctx.send(f"{target.display_name}'s spirit monk is {random.choice(monks)}")
+
+@bot.command()
+async def spirit_bard(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  bards = ["the bard", "the minstrel"]
+  await ctx.send(f"{target.display_name}'s spirit bard is {random.choice(bards)}")
+
+@bot.command()
+async def spirit_rogue(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  rogues = ["the rogue", "the thief"]
+  await ctx.send(f"{target.display_name}'s spirit rogue is {random.choice(rogues)}")
+
+@bot.command()
+async def spirit_barbarian(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  barbarians = ["the barbarian", "the berserker"]
+  await ctx.send(f"{target.display_name}'s spirit barbarian is {random.choice(barbarians)}")
+
+@bot.command()
+async def spirit_sorcerer(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  sorcerers = ["the sorcerer", "the mage"]
+  await ctx.send(f"{target.display_name}'s spirit sorcerer is {random.choice(sorcerers)}")
+
+@bot.command()
+async def spirit_warlock(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  warlocks = ["the warlock", "the dark mage"]
+  await ctx.send(f"{target.display_name}'s spirit warlock is {random.choice(warlocks)}")
+
+@bot.command()
+async def spirit_cleric(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  clerics = ["the cleric", "the healer"]
+  await ctx.send(f"{target.display_name}'s spirit cleric is {random.choice(clerics)}")
+
+@bot.command()
+async def spirit_artificer(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  artificers = ["the artificer", "the inventor"]
+  await ctx.send(f"{target.display_name}'s spirit artificer is {random.choice(artificers)}")
+
+@bot.command()
+async def spirit_ranger_dnd(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  rangers = ["the ranger", "the tracker"]
+  await ctx.send(f"{target.display_name}'s spirit ranger is {random.choice(rangers)}")
+
+@bot.command()
+async def spirit_fighter(ctx, target: discord.Member = None):
+  target = target or ctx.author
+  fighters = ["the fighter", "the warrior"]
+  await ctx.send(f"{target.display_name}'s spirit fighter is {random.choice(fighters)}")
+
+@bot.command()
+async def spirit_ranger_class(ctx, target: discord.Member = None):
+  await spirit_ranger_dnd(ctx, target)
+
+@bot.command()
+async def spirit_druid_class(ctx, target: discord.Member = None):
+  await spirit_druid(ctx, target)
+
+@bot.command()
+async def spirit_paladin_class(ctx, target: discord.Member = None):
+  await spirit_paladin(ctx, target)
+
+@bot.command()
+async def spirit_monk_class(ctx, target: discord.Member = None):
+  await spirit_monk(ctx, target)
+
+@bot.command()
+async def spirit_bard_class(ctx, target: discord.Member = None):
+  await spirit_bard(ctx, target)
+
+@bot.command()
+async def spirit_rogue_class(ctx, target: discord.Member = None):
+  await spirit_rogue(ctx, target)
+
+@bot.command()
+async def spirit_barbarian_class(ctx, target: discord.Member = None):
+  await spirit_barbarian(ctx, target)
+
+@bot.command()
+async def spirit_sorcerer_class(ctx, target: discord.Member = None):
+  await spirit_sorcerer(ctx, target)
+
+@bot.command()
+async def spirit_warlock_class(ctx, target: discord.Member = None):
+  await spirit_warlock(ctx, target)
+
+@bot.command()
+async def spirit_cleric_class(ctx, target: discord.Member = None):
+  await spirit_cleric(ctx, target)
+
+@bot.command()
+async def spirit_artificer_class(ctx, target: discord.Member = None):
+  await spirit_artificer(ctx, target)
+
+@bot.command()
+async def spirit_fighter_class(ctx, target: discord.Member = None):
+  await spirit_fighter(ctx, target)
+
+@bot.command()
+async def spirit_wizard_class(ctx, target: discord.Member = None):
+  await spirit_wizard(ctx, target)
+
+@bot.command()
+async def spirit_witch_class(ctx, target: discord.Member = None):
+  await spirit_witch(ctx, target)
+
+@bot.command()
+async def spirit_vampire_class(ctx, target: discord.Member = None):
+  await spirit_vampire(ctx, target)
+
+@bot.command()
+async def spirit_werewolf_class(ctx, target: discord.Member = None):
+  await spirit_werewolf(ctx, target)
+
+@bot.command()
+async def spirit_zombie_class(ctx, target: discord.Member = None):
+  await spirit_zombie(ctx, target)
+
+@bot.command()
+async def spirit_ghost_class(ctx, target: discord.Member = None):
+  await spirit_ghost(ctx, target)
+
+@bot.command()
+async def spirit_demon_class(ctx, target: discord.Member = None):
+  await spirit_demon(ctx, target)
+
+@bot.command()
+async def spirit_angel_class(ctx, target: discord.Member = None):
+  await spirit_angel(ctx, target)
+
+@bot.command()
+async def spirit_dragon_class(ctx, target: discord.Member = None):
+  await spirit_dragon(ctx, target)
+
+@bot.command()
+async def spirit_phoenix_class(ctx, target: discord.Member = None):
+  await spirit_phoenix(ctx, target)
+
+@bot.command()
+async def spirit_unicorn_class(ctx, target: discord.Member = None):
+  await spirit_unicorn(ctx, target)
+
+@bot.command()
+async def spirit_griffin_class(ctx, target: discord.Member = None):
+  await spirit_griffin(ctx, target)
+
+@bot.command()
+async def spirit_kraken_class(ctx, target: discord.Member = None):
+  await spirit_kraken(ctx, target)
+
+@bot.command()
+async def spirit_chimera_class(ctx, target: discord.Member = None):
+  await spirit_chimera(ctx, target)
+
+@bot.command()
+async def spirit_sphinx_class(ctx, target: discord.Member = None):
+  await spirit_sphinx(ctx, target)
+
+@bot.command()
+async def spirit_minotaur_class(ctx, target: discord.Member = None):
+  await spirit_minotaur(ctx, target)
+
+@bot.command()
+async def spirit_centaur_class(ctx, target: discord.Member = None):
+  await spirit_centaur(ctx, target)
+
+@bot.command()
+async def spirit_mermaid_class(ctx, target: discord.Member = None):
+  await spirit_mermaid(ctx, target)
+
+@bot.command()
+async def spirit_pirate_class(ctx, target: discord.Member = None):
+  await spirit_pirate(ctx, target)
+
+@bot.command()
+async def spirit_ninja_class(ctx, target: discord.Member = None):
+  await spirit_ninja(ctx, target)
+
+@bot.command()
+async def spirit_samurai_class(ctx, target: discord.Member = None):
+  await spirit_samurai(ctx, target)
+
+@bot.command()
+async def spirit_knight_class(ctx, target: discord.Member = None):
+  await spirit_knight(ctx, target)
+
+@bot.command()
+async def spirit_viking_class(ctx, target: discord.Member = None):
+  await spirit_viking(ctx, target)
+
+@bot.command()
+async def spirit_cowboy_class(ctx, target: discord.Member = None):
+  await spirit_cowboy(ctx, target)
+
+@bot.command()
+async def spirit_astronaut_class(ctx, target: discord.Member = None):
+  await spirit_astronaut(ctx, target)
+
+@bot.command()
+async def spirit_detective_class(ctx, target: discord.Member = None):
+  await spirit_detective(ctx, target)
+
+@bot.command()
+async def spirit_spy_class(ctx, target: discord.Member = None):
+  await spirit_spy_cmd(ctx, target)
+
+@bot.command()
+async def spirit_assassin_class(ctx, target: discord.Member = None):
+  await spirit_assassin(ctx, target)
+
+@bot.command()
+async def spirit_mercenary_class(ctx, target: discord.Member = None):
+  await spirit_mercenary(ctx, target)
+
+@bot.command()
+async def spirit_soldier_class(ctx, target: discord.Member = None):
+  await spirit_soldier(ctx, target)
+
+@bot.command()
+async def spirit_pilot_class(ctx, target: discord.Member = None):
+  await spirit_pilot(ctx, target)
+
+@bot.command()
+async def spirit_driver_class(ctx, target: discord.Member = None):
+  await spirit_driver(ctx, target)
+
+@bot.command()
+async def spirit_racer_class(ctx, target: discord.Member = None):
+  await spirit_racer(ctx, target)
+
+@bot.command()
+async def spirit_surfer_class(ctx, target: discord.Member = None):
+  await spirit_surfer(ctx, target)
+
+@bot.command()
+async def spirit_skater_class(ctx, target: discord.Member = None):
+  await spirit_skater(ctx, target)
+
+@bot.command()
+async def spirit_climber_class(ctx, target: discord.Member = None):
+  await spirit_climber(ctx, target)
+
+@bot.command()
+async def spirit_diver_class(ctx, target: discord.Member = None):
+  await spirit_diver(ctx, target)
+
+@bot.command()
+async def spirit_hunter_class(ctx, target: discord.Member = None):
+  await spirit_hunter_cmd(ctx, target)
+
+@bot.command()
+async def spirit_ranger_dnd_class(ctx, target: discord.Member = None):
+  await spirit_ranger_dnd(ctx, target)
+
+@bot.command()
+async def spirit_paladin_dnd(ctx, target: discord.Member = None):
+  await spirit_paladin(ctx, target)
+
+@bot.command()
+async def spirit_monk_dnd(ctx, target: discord.Member = None):
+  await spirit_monk(ctx, target)
+
+@bot.command()
+async def spirit_bard_dnd(ctx, target: discord.Member = None):
+  await spirit_bard(ctx, target)
+
+@bot.command()
+async def spirit_rogue_dnd(ctx, target: discord.Member = None):
+  await spirit_rogue(ctx, target)
+
+@bot.command()
+async def spirit_barbarian_dnd(ctx, target: discord.Member = None):
+  await spirit_barbarian(ctx, target)
+
+@bot.command()
+async def spirit_sorcerer_dnd(ctx, target: discord.Member = None):
+  await spirit_sorcerer(ctx, target)
+
+@bot.command()
+async def spirit_warlock_dnd(ctx, target: discord.Member = None):
+  await spirit_warlock(ctx, target)
+
+@bot.command()
+async def spirit_cleric_dnd(ctx, target: discord.Member = None):
+  await spirit_cleric(ctx, target)
+
+@bot.command()
+async def spirit_artificer_dnd(ctx, target: discord.Member = None):
+  await spirit_artificer(ctx, target)
+
+@bot.command()
+async def spirit_fighter_dnd(ctx, target: discord.Member = None):
+  await spirit_fighter(ctx, target)
+
+@bot.command()
+async def spirit_wizard_dnd(ctx, target: discord.Member = None):
+  await spirit_wizard(ctx, target)
+
+@bot.command()
+async def spirit_witch_dnd(ctx, target: discord.Member = None):
+  await spirit_witch(ctx, target)
+
+@bot.command()
+async def spirit_vampire_dnd(ctx, target: discord.Member = None):
+  await spirit_vampire(ctx, target)
+
+@bot.command()
+async def spirit_werewolf_dnd(ctx, target: discord.Member = None):
+  await spirit_werewolf(ctx, target)
+
+@bot.command()
+async def spirit_zombie_dnd(ctx, target: discord.Member = None):
+  await spirit_zombie(ctx, target)
+
+@bot.command()
+async def spirit_ghost_dnd(ctx, target: discord.Member = None):
+  await spirit_ghost(ctx, target)
+
+@bot.command()
+async def spirit_demon_dnd(ctx, target: discord.Member = None):
+  await spirit_demon(ctx, target)
+
+@bot.command()
+async def spirit_angel_dnd(ctx, target: discord.Member = None):
+  await spirit_angel(ctx, target)
+
+@bot.command()
+async def spirit_dragon_dnd(ctx, target: discord.Member = None):
+  await spirit_dragon(ctx, target)
+
+@bot.command()
+async def spirit_phoenix_dnd(ctx, target: discord.Member = None):
+  await spirit_phoenix(ctx, target)
+
+@bot.command()
+async def spirit_unicorn_dnd(ctx, target: discord.Member = None):
+  await spirit_unicorn(ctx, target)
+
+@bot.command()
+async def spirit_griffin_dnd(ctx, target: discord.Member = None):
+  await spirit_griffin(ctx, target)
+
+@bot.command()
+async def spirit_kraken_dnd(ctx, target: discord.Member = None):
+  await spirit_kraken(ctx, target)
+
+@bot.command()
+async def spirit_chimera_dnd(ctx, target: discord.Member = None):
+  await spirit_chimera(ctx, target)
+
+@bot.command()
+async def spirit_sphinx_dnd(ctx, target: discord.Member = None):
+  await spirit_sphinx(ctx, target)
+
+@bot.command()
+async def spirit_minotaur_dnd(ctx, target: discord.Member = None):
+  await spirit_minotaur(ctx, target)
+
+@bot.command()
+async def spirit_centaur_dnd(ctx, target: discord.Member = None):
+  await spirit_centaur(ctx, target)
+
+@bot.command()
+async def spirit_mermaid_dnd(ctx, target: discord.Member = None):
+  await spirit_mermaid(ctx, target)
+
+@bot.command()
+async def spirit_pirate_dnd(ctx, target: discord.Member = None):
+  await spirit_pirate(ctx, target)
+
+@bot.command()
+async def spirit_ninja_dnd(ctx, target: discord.Member = None):
+  await spirit_ninja(ctx, target)
+
+@bot.command()
+async def spirit_samurai_dnd(ctx, target: discord.Member = None):
+  await spirit_samurai(ctx, target)
+
+@bot.command()
+async def spirit_knight_dnd(ctx, target: discord.Member = None):
+  await spirit_knight(ctx, target)
+
+@bot.command()
+async def spirit_viking_dnd(ctx, target: discord.Member = None):
+  await spirit_viking(ctx, target)
+
+@bot.command()
+async def spirit_cowboy_dnd(ctx, target: discord.Member = None):
+  await spirit_cowboy(ctx, target)
+
+@bot.command()
+async def spirit_astronaut_dnd(ctx, target: discord.Member = None):
+  await spirit_astronaut(ctx, target)
+
+@bot.command()
+async def spirit_detective_dnd(ctx, target: discord.Member = None):
+  await spirit_detective(ctx, target)
+
+@bot.command()
+async def spirit_spy_dnd(ctx, target: discord.Member = None):
+  await spirit_spy_cmd(ctx, target)
+
+@bot.command()
+async def spirit_assassin_dnd(ctx, target: discord.Member = None):
+  await spirit_assassin(ctx, target)
+
+@bot.command()
+async def spirit_mercenary_dnd(ctx, target: discord.Member = None):
+  await spirit_mercenary(ctx, target)
+
+@bot.command()
+async def spirit_soldier_dnd(ctx, target: discord.Member = None):
+  await spirit_soldier(ctx, target)
+
+@bot.command()
+async def spirit_pilot_dnd(ctx, target: discord.Member = None):
+  await spirit_pilot(ctx, target)
+
+@bot.command()
+async def spirit_driver_dnd(ctx, target: discord.Member = None):
+  await spirit_driver(ctx, target)
+
+@bot.command()
+async def spirit_racer_dnd(ctx, target: discord.Member = None):
+  await spirit_racer(ctx, target)
+
+@bot.command()
+async def spirit_surfer_dnd(ctx, target: discord.Member = None):
+  await spirit_surfer(ctx, target)
+
+@bot.command()
+async def spirit_skater_dnd(ctx, target: discord.Member = None):
+  await spirit_skater(ctx, target)
+
+@bot.command()
+async def spirit_climber_dnd(ctx, target: discord.Member = None):
+  await spirit_climber(ctx, target)
+
+@bot.command()
+async def spirit_diver_dnd(ctx, target: discord.Member = None):
+  await spirit_diver(ctx, target)
+
+@bot.command()
+async def spirit_hunter_dnd(ctx, target: discord.Member = None):
+  await spirit_hunter_cmd(ctx, target)
+
+@bot.command()
+async def spirit_ranger_dnd_dnd(ctx, target: discord.Member = None):
+  await spirit_ranger_dnd(ctx, target)
+
+
+# ── PAGINATED HELP COMMAND ──
+
+HELP_PAGES = {
+  1: """
+**page 1/3 - economy, creatures, combat** 🔥
+
+**economy:**
+embers, daily, streak, beg, scam, invest, heist, loan, repay, burn, send, work, fish, hunt, mine, dig, search, crime
+
+**creatures:**
+summon, cage, release, feed, neglect, mood, evolve, breed, sacrifice, rename, favorite, trade, auction, bid, inspect, adopt, kidnap
+
+**combat:**
+duel, raid, ambush, defend, berserk, bribe, flee, taunt, combo, revive, wager, rank, attack, defend_boss, heal, flee_boss
+
+**gambling:**
+dice, shells, coinflip, cf, spin, surge, vault, pick, chase, chamber, rig, slots, blackjack, roulette, lottery, gamble, bet, double, allin
+""",
+  2: """
+**page 2/3 - social, utility, weird, moderation** 🔥
+
+**social:**
+marry, divorce, will, cult, betray, tribute, roast, confess, ship, howgay, howsimp, howsmart, howdumb, howrich, howlucky, howsus, howcringe, howbased, pp, iq, height, weight, age, birthday, zodiac, color, food, animal
+
+**utility:**
+tutorial, stats, server, global_lb, settings, cooldowns, changelog, ping, avatar, userinfo, roll, choose, flipcoin, rps, rate, joke, fact, quote, meme, roastme, compliment, insult, song, movie, game, hobby, job, car, house, phone
+
+**weird:**
+dream, curse, bless, time, weather, oracle, mimic, glitch, lore, quit, eightball, magic8ball, fortune_cookie, horoscope, tarot_card, crystal_ball, palm_reading, aura_reading, zodiac_sign, compatibility, soulmate, enemy, bestfriend, rival, twin, clone, doppelganger
+
+**moderation:**
+kick, ban, unban, mute, unmute, purge, warn, warnings, clearwarns, lock, unlock, slowmode, nick, roleadd, roleremove
+""",
+  3: """
+**page 3/3 - fun, reactions, admin, spirit** 🔥
+
+**fun/misc:**
+pet, tickle, poke, wave, salute, highfive, fistbump, nod, shrug, facepalm, clap, bow, cheer, panic, yeet, boop, stare, lurk, lurkmode, afk, back, remind, poll, vote, coin, password, calc, reverse, uppercase, lowercase, len_text, repeat, mock, spoiler, bold, italic, underline, strikethrough, code, quote_text, embed, say, echo, announce, botinfo, invite, support, report, suggest, uptime, version, credits, donate, vote_bot, premium, status, pingme, selfdestruct, hack, nuke, boom, dab, floss, default_dance, take_the_l, rekt, oof, big_oof, f_in_chat, rip, respect, sus, imposter, vented, emergency, eject, tasks, sabotage, report_body, meeting, skip, guilty, innocent, defend_me, accuse, alibi, sus_meter, trust, distrust, crewmate, sheriff, jester, executioner, psychic, medic, engineer, spy, mayor, veteran, vig, jail, execute, revive_player, haunt, seance, ghost, alive, dead, medium, retributionist, transporter, escort, consort, blackmail, forger, framer, hypnotist, ambusher_cmd, poisoner, hexmaster, hex, pestilence, juggernaut, arsonist, douse, ignite, serialkiller, mafioso, godfather, blackmailer, consigliere, janitor, disguiser, survivor, amnesiac, guardianangel, pirate, plunderer, crusader, trapper, trap, lookout, tracker, investigator, sheriff_cmd, bodyguard, doctor_cmd, reveal, whisper, lastwill, read_will, deathnote, rolelist, werewolf, fullmoon, howl, maul, plaguebearer, infect, necromancer, reanimate, medusa, stone, puppeteer, control, covenleader, potionmaster, heal_potion, kill_potion, reveal_potion, crusade, deus_vult, bonk_cmd, hornyjail, unhorny, horny_meter, downbad, touchgrass, gooutside, shower, sleep_cmd, hydrate, eat_cmd, selfcare, mentalhealth, vent, therapy, advice, wisdom, lifehack, protip, hacklife, motivation, demotivation, pep_talk, reality_check, wake_up, reality, exist, void_cmd, abyss, chaos, order, balance_cmd, yin_yang, karma, good_karma, bad_karma
+
+**admin (owner only):**
+give, setember, remove, wipe
+
+**spirit commands:**
+spirit_animal, spirit_color, spirit_number, spirit_food, spirit_drink, spirit_song, spirit_movie, spirit_game, spirit_hobby, spirit_job, spirit_car, spirit_house, spirit_phone, spirit_pet, spirit_weapon, spirit_element, spirit_magic, spirit_villain, spirit_hero, spirit_celebrity, spirit_meme, spirit_emoji, spirit_quote, spirit_word, spirit_number_lucky, spirit_day, spirit_month, spirit_season, spirit_time, spirit_place, spirit_crystal, spirit_flower, spirit_tree, spirit_gem, spirit_metal, spirit_planet, spirit_star, spirit_galaxy, spirit_weather, spirit_landscape, spirit_architecture, spirit_art, spirit_music, spirit_dance, spirit_sport, spirit_boardgame, spirit_cardgame, spirit_videogame, spirit_book, spirit_author, spirit_poet, spirit_painter, spirit_scientist, spirit_philosopher, spirit_inventor, spirit_explorer, spirit_warrior, spirit_king, spirit_queen, spirit_god, spirit_goddess, spirit_mythical, spirit_fairy, spirit_wizard, spirit_witch, spirit_vampire, spirit_werewolf, spirit_zombie, spirit_ghost, spirit_demon, spirit_angel, spirit_dragon, spirit_phoenix, spirit_unicorn, spirit_griffin, spirit_kraken, spirit_chimera, spirit_sphinx, spirit_minotaur, spirit_centaur, spirit_mermaid, spirit_pirate, spirit_ninja, spirit_samurai, spirit_knight, spirit_viking, spirit_cowboy, spirit_astronaut, spirit_detective, spirit_spy_cmd, spirit_assassin, spirit_mercenary, spirit_soldier, spirit_pilot, spirit_driver, spirit_racer, spirit_surfer, spirit_skater, spirit_climber, spirit_diver, spirit_hunter_cmd, spirit_ranger, spirit_druid, spirit_paladin, spirit_monk, spirit_bard, spirit_rogue, spirit_barbarian, spirit_sorcerer, spirit_warlock, spirit_cleric, spirit_artificer, spirit_ranger_dnd, spirit_fighter, spirit_ranger_class, spirit_druid_class, spirit_paladin_class, spirit_monk_class, spirit_bard_class, spirit_rogue_class, spirit_barbarian_class, spirit_sorcerer_class, spirit_warlock_class, spirit_cleric_class, spirit_artificer_class, spirit_fighter_class, spirit_wizard_class, spirit_witch_class, spirit_vampire_class, spirit_werewolf_class, spirit_zombie_class, spirit_ghost_class, spirit_demon_class, spirit_angel_class, spirit_dragon_class, spirit_phoenix_class, spirit_unicorn_class, spirit_griffin_class, spirit_kraken_class, spirit_chimera_class, spirit_sphinx_class, spirit_minotaur_class, spirit_centaur_class, spirit_mermaid_class, spirit_pirate_class, spirit_ninja_class, spirit_samurai_class, spirit_knight_class, spirit_viking_class, spirit_cowboy_class, spirit_astronaut_class, spirit_detective_class, spirit_spy_class, spirit_assassin_class, spirit_mercenary_class, spirit_soldier_class, spirit_pilot_class, spirit_driver_class, spirit_racer_class, spirit_surfer_class, spirit_skater_class, spirit_climber_class, spirit_diver_class, spirit_hunter_class, spirit_ranger_dnd_class, spirit_paladin_dnd, spirit_monk_dnd, spirit_bard_dnd, spirit_rogue_dnd, spirit_barbarian_dnd, spirit_sorcerer_dnd, spirit_warlock_dnd, spirit_cleric_dnd, spirit_artificer_dnd, spirit_fighter_dnd, spirit_wizard_dnd, spirit_witch_dnd, spirit_vampire_dnd, spirit_werewolf_dnd, spirit_zombie_dnd, spirit_ghost_dnd, spirit_demon_dnd, spirit_angel_dnd, spirit_dragon_dnd, spirit_phoenix_dnd, spirit_unicorn_dnd, spirit_griffin_dnd, spirit_kraken_dnd, spirit_chimera_dnd, spirit_sphinx_dnd, spirit_minotaur_dnd, spirit_centaur_dnd, spirit_mermaid_dnd, spirit_pirate_dnd, spirit_ninja_dnd, spirit_samurai_dnd, spirit_knight_dnd, spirit_viking_dnd, spirit_cowboy_dnd, spirit_astronaut_dnd, spirit_detective_dnd, spirit_spy_dnd, spirit_assassin_dnd, spirit_mercenary_dnd, spirit_soldier_dnd, spirit_pilot_dnd, spirit_driver_dnd, spirit_racer_dnd, spirit_surfer_dnd, spirit_skater_dnd, spirit_climber_dnd, spirit_diver_dnd, spirit_hunter_dnd, spirit_ranger_dnd_dnd
+"""
+}
+
+@bot.command()
+async def help(ctx, page: str = None):
+  """show help with pages"""
+  if not page:
+    await ctx.send(
+      "**flame bot help** 🔥\n"
+      "prefix: **f ** or **flame ** (space required!)\n"
+      "currency: **embers**\n\n"
+      "use **f help 1** for economy/creatures/combat/gambling\n"
+      "use **f help 2** for social/utility/weird/moderation\n"
+      "use **f help 3** for fun/admin/spirit commands\n\n"
+      "total commands: **350+**\n"
+      "owner: justaflamewithfragz"
+    )
+    return
+
+  try:
+    page_num = int(page)
+    if page_num in HELP_PAGES:
+      await ctx.send(HELP_PAGES[page_num])
     else:
-        await ctx.send("use f help 1, f help 2, or f help 3")
-        return
-    embed.set_footer(text="prefix: f or flame (space required) | currency: embers | made by justaflamewithfragz")
-    await ctx.send(embed=embed)
+      await ctx.send("only pages 1, 2, and 3 exist bro")
+  except ValueError:
+    await ctx.send("thats not a page number bro. use 1, 2, or 3")
 
-# ==================== RUN BOT ====================
-if __name__ == "__main__":
-    if not TOKEN:
-        print("ERROR: DISCORD_TOKEN environment variable not set!")
-        print("Set it in Railway or your environment variables.")
-    else:
-        bot.run(TOKEN)
+# ── RUN THE BOT ──
+TOKEN = os.environ.get("DISCORD_TOKEN")
+if not TOKEN:
+  print("ERROR: no DISCORD_TOKEN environment variable found!")
+  print("set it in railway or run: export DISCORD_TOKEN=your_token")
+else:
+  bot.run(TOKEN)
